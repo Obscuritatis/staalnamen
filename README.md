@@ -1,20 +1,22 @@
 # Staalnamen
 
 Webapp om staalnamerondes bij te houden. Per site kies je een soort ronde (*Legionella* of *Textielstalen*)
-en maak je een nieuwe ronde aan. Elke ronde krijgt de vaste punten van die site en soort; per punt vink je
-*Genomen* aan en vul je staalnummer, opmerkingen, foto's en (bij legionella) de watertemperatuur in.
-Een ronde is te exporteren naar Excel (met foto's).
+en maak je een nieuwe ronde aan. Elke ronde krijgt de vaste punten (looproute) van die site en soort.
+Per punt vink je elk staal aan dat genomen is (bij legionella soms twee: *Legionella* en *Chemisch +
+bacteriologisch*) en vul je staalnummer, temperatuur, opmerkingen en foto's in. Een ronde is te exporteren
+naar Excel (met foto's).
 
 Sites: Psychiatrisch ziekenhuis Tienen, WZC Sint-Alexius, WZC-Passionisten, WZC-Huize Nazareth en PSC-Leuven.
-Sites en soorten rondes staan bovenaan in [`index.html`](index.html) (`SITES`, `TYPES`).
+Sites, soorten rondes en stalen staan bovenaan in [`index.html`](index.html) (`SITES`, `TYPES`).
 
-**Vaste punten**: open een site en soort ronde, klik *Plakken vanuit Excel*, kopieer in Excel de rijen van de
-loopronde (met de kolomtitels) en plak ze. Elke kolom uit Excel wordt overgenomen. Een nieuwe lijst plakken
-vervangt de oude; rondes die al bestaan, veranderen daardoor niet.
+**Vaste punten**: per site en soort ronde. Plak ze vanuit Excel (met kolomtitels: Legionella en Chemische +
+bacteriologische analyse met een x, Afdeling, Verdiep, Tappunt naam) of voeg ze één voor één toe. De volgorde
+van de looproute pas je aan met de pijltjes; per punt kan je een foto van het tappunt toevoegen. Wijzigingen
+aan de looproute veranderen bestaande rondes niet.
 
 De app is een statische pagina (GitHub Pages), gebouwd op dezelfde basis als
 [veiligheidsrondes](https://github.com/Obscuritatis/veiligheidsrondes). Ze gebruikt hetzelfde Supabase-project
-en dezelfde aanmelding met een link per e-mail, maar eigen tabellen (`staalpuntlijsten`, `staalrondes`,
+en dezelfde aanmelding met een link per e-mail, maar eigen tabellen (`staalpunten`, `staalrondes`,
 `staalronde_punten`) en een eigen fotobucket (`staalnamen-fotos`). De gegevens van de veiligheidsrondes worden niet aangeraakt.
 
 ## Eenmalige opzet
