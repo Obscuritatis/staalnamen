@@ -1,9 +1,8 @@
--- Staalnamen: tabel, fotobucket en toegangsregels.
--- Draait in hetzelfde Supabase-project als de veiligheidsrondes en raakt die gegevens niet aan:
--- alles hier is nieuw (tabel "staalnamen", bucket "staalnamen-fotos").
+-- Staalnamen: vaste tappunten, rondes, toegangsregels en fotobucket.
+-- Draait in hetzelfde Supabase-project als de veiligheidsrondes en raakt die gegevens niet aan.
 -- Het gebruikt wel de bestaande toegangslijst "toegang" en de functie heeft_toegang() van de
 -- veiligheidsrondes: wie daar toegang heeft, heeft ook toegang tot de staalnamen.
--- Plak dit volledig in Supabase > SQL Editor en klik op Run.
+-- Plak dit volledig in Supabase > SQL Editor en klik op Run. Opnieuw uitvoeren kan geen kwaad.
 
 -- Veiligheidscheck: de toegangslijst van de veiligheidsrondes moet al bestaan.
 do $$ begin
@@ -12,28 +11,68 @@ do $$ begin
   end if;
 end $$;
 
-create table if not exists public.staalnamen (
+-- Vaste punten (looproute) per site en soort ronde.
+-- "analyses": welke stalen op dit punt genomen worden, bv. {legionella, chemisch}.
+-- "foto": foto van het tappunt, zodat je het terugvindt.
+create table if not exists public.staalpunten (
   id uuid primary key default gen_random_uuid(),
   site text not null,
-  datum date not null,
-  gebouw text not null default '',
+  type text not null,
+  volgorde integer not null default 0,
+  afdeling text not null default '',
   verdiep text not null default '',
-  lokaal text not null default '',
-  staaltype text not null,
-  staalnummer text not null default '',
-  uitvoerder text not null default '',
-  opmerkingen text not null default '',
-  fotos text[] not null default '{}',
+  tappunt text not null default '',
+  analyses text[] not null default '{}',
+  foto text,
   aangemaakt timestamptz not null default now(),
   aangemaakt_door uuid default auth.uid()
 );
--- De lijst met staaltypes staat in de app (index.html), niet in de database.
-create index if not exists staalnamen_site_datum_idx on public.staalnamen(site, datum desc);
+create index if not exists staalpunten_site_type_idx on public.staalpunten(site, type, volgorde);
 
-alter table public.staalnamen enable row level security;
+create table if not exists public.staalrondes (
+  id uuid primary key default gen_random_uuid(),
+  site text not null,
+  type text not null,
+  datum date not null,
+  aangemaakt timestamptz not null default now(),
+  aangemaakt_door uuid default auth.uid()
+);
+create index if not exists staalrondes_site_type_idx on public.staalrondes(site, type, datum desc);
 
-drop policy if exists "staalnamen voor collega's" on public.staalnamen;
-create policy "staalnamen voor collega's" on public.staalnamen
+-- Elk punt van een ronde, met een kopie van het vaste punt zodat latere wijzigingen
+-- aan de looproute oude rondes niet veranderen.
+-- "genomen": de analyses waarvan het staal genomen is.
+create table if not exists public.staalronde_punten (
+  id uuid primary key default gen_random_uuid(),
+  ronde_id uuid not null references public.staalrondes(id) on delete cascade,
+  aangemaakt timestamptz not null default now(),
+  aangemaakt_door uuid default auth.uid()
+);
+alter table public.staalronde_punten add column if not exists punt_id uuid references public.staalpunten(id) on delete set null;
+alter table public.staalronde_punten add column if not exists volgorde integer not null default 0;
+alter table public.staalronde_punten add column if not exists afdeling text not null default '';
+alter table public.staalronde_punten add column if not exists verdiep text not null default '';
+alter table public.staalronde_punten add column if not exists tappunt text not null default '';
+alter table public.staalronde_punten add column if not exists analyses text[] not null default '{}';
+alter table public.staalronde_punten add column if not exists genomen_analyses text[] not null default '{}';
+alter table public.staalronde_punten add column if not exists staalnummer text not null default '';
+alter table public.staalronde_punten add column if not exists temperatuur text not null default '';
+alter table public.staalronde_punten add column if not exists opmerkingen text not null default '';
+alter table public.staalronde_punten add column if not exists fotos text[] not null default '{}';
+create index if not exists staalronde_punten_ronde_idx on public.staalronde_punten(ronde_id, volgorde);
+
+alter table public.staalpunten enable row level security;
+alter table public.staalrondes enable row level security;
+alter table public.staalronde_punten enable row level security;
+
+drop policy if exists "staalpunten voor collega's" on public.staalpunten;
+create policy "staalpunten voor collega's" on public.staalpunten
+  for all to authenticated using (public.heeft_toegang()) with check (public.heeft_toegang());
+drop policy if exists "staalrondes voor collega's" on public.staalrondes;
+create policy "staalrondes voor collega's" on public.staalrondes
+  for all to authenticated using (public.heeft_toegang()) with check (public.heeft_toegang());
+drop policy if exists "staalronde_punten voor collega's" on public.staalronde_punten;
+create policy "staalronde_punten voor collega's" on public.staalronde_punten
   for all to authenticated using (public.heeft_toegang()) with check (public.heeft_toegang());
 
 -- Foto's: aparte privé-bucket, enkel voor e-mailadressen in "toegang".
@@ -55,5 +94,16 @@ create policy "staalnamen fotos verwijderen" on storage.objects for delete to au
 
 -- Live bijwerken wanneer een collega iets wijzigt.
 do $$ begin
-  alter publication supabase_realtime add table public.staalnamen;
+  alter publication supabase_realtime add table public.staalpunten;
 exception when duplicate_object then null; end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.staalrondes;
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.staalronde_punten;
+exception when duplicate_object then null; end $$;
+
+-- Tabellen uit eerdere versies die niet meer gebruikt worden. Opruimen kan (enkel als er niets in
+-- staat dat je wil bewaren) door de streepjes voor de volgende regels weg te halen:
+-- drop table if exists public.staalnamen;
+-- drop table if exists public.staalpuntlijsten;
