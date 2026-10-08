@@ -1,0 +1,35 @@
+# Staalnamen
+
+Webapp om per site staalnamen te registreren: datum, staaltype, staalnummer, uitvoerder,
+locatie (gebouw, verdiep, lokaal/tappunt), opmerkingen en foto's. Per site kan je de staalnamen
+filteren op staaltype en exporteren naar Excel (met foto's), eventueel voor een periode.
+
+Sites: Psychiatrisch ziekenhuis Tienen, WZC Sint-Alexius, WZC-Passionisten, WZC-Huize Nazareth, PSC-Leuven en Hestia.
+Staaltypes staan bovenaan in [`index.html`](index.html) (`STAALTYPES`) en zijn daar aan te passen.
+
+De app is een statische pagina (GitHub Pages), gebouwd op dezelfde basis als
+[veiligheidsrondes](https://github.com/Obscuritatis/veiligheidsrondes). Ze gebruikt hetzelfde Supabase-project
+en dezelfde aanmelding met een link per e-mail, maar een eigen tabel (`staalnamen`) en een eigen fotobucket
+(`staalnamen-fotos`). De gegevens van de veiligheidsrondes worden niet aangeraakt.
+
+## Eenmalige opzet
+
+1. **Database**: open in het bestaande Supabase-project *SQL Editor*, plak de inhoud van
+   [`supabase/schema.sql`](supabase/schema.sql) en klik *Run*. Het script maakt enkel nieuwe onderdelen aan.
+2. **Toegang**: de app gebruikt dezelfde toegangslijst (`toegang`) als de veiligheidsrondes.
+   Wie daar staat, kan ook de staalnamen zien en invullen. Iemand toevoegen:
+   ```sql
+   insert into public.toegang (email) values ('naam@voorbeeld.be');
+   ```
+3. **Aanmeldlink**: voeg onder *Authentication > URL Configuration* een extra *Redirect URL* toe voor het adres
+   van deze app, bv. `https://obscuritatis.github.io/staalnamen/`. Laat de bestaande van de veiligheidsrondes staan.
+4. **GitHub Pages**: repository > *Settings > Pages* > *Deploy from a branch* > `main` / `(root)`.
+
+De koppeling met Supabase staat in [`config.js`](config.js) (zelfde project als de veiligheidsrondes).
+
+## Opmerkingen
+
+- De gratis aanmeldmails van Supabase zijn beperkt in aantal per uur. Voor een grotere groep stel je
+  een eigen mailserver in onder *Authentication > SMTP*.
+- Een gratis Supabase-project wordt gepauzeerd na een week zonder gebruik; je zet het terug aan in het dashboard.
+- In de Excel-export staan maximaal 4 foto's per staalname; meer foto's blijven zichtbaar in de app.
