@@ -1,9 +1,9 @@
 # Staalnamen
 
-Webapp om staalnamerondes bij te houden. Per site kies je een soort ronde (*Legionella* of *Textielstalen*)
+Webapp om staalnamerondes bij te houden. Per site kies je een soort ronde (*Legionella* of *Afvalwater en linnen*)
 en maak je een nieuwe ronde aan. Elke ronde krijgt de vaste punten (looproute) van die site en soort.
 Per punt vink je elk staal aan dat genomen is (bij legionella soms twee: *Legionella* en *Chemisch +
-bacteriologisch*) en vul je staalnummer, temperatuur, opmerkingen en foto's in. Een ronde is te exporteren
+bacteriologisch*) en vul je opmerkingen en foto's in. Een ronde is te exporteren
 naar Excel (met foto's).
 
 Sites: Psychiatrisch ziekenhuis Tienen, WZC Sint-Alexius, WZC-Passionisten, WZC-Huize Nazareth en PSC-Leuven.
