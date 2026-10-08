@@ -114,6 +114,24 @@ button.duim-knop { padding: 0; border: 0; background: none; cursor: zoom-in; }
 .banner { padding: 10px 14px; border-radius: var(--radius); background: #fbefd9; color: #9a5b00; font-size: .9rem; }
 .toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 8px 16px; border-radius: 99px; font-size: .9rem; }
 @media (prefers-reduced-motion: no-preference) { .site, .btn { transition: border-color .15s, filter .15s; } }
+
+/* Rondes en vaste punten */
+:root { --ok: #1d7a4c; --ok-bg: #e3f2ea; --open-bg: #fbe6e3; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --ok: #5cc98f; --ok-bg: #173327; --open-bg: #3b1a17; } }
+:root[data-theme="dark"] { --ok: #5cc98f; --ok-bg: #173327; --open-bg: #3b1a17; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.open { background: var(--open-bg); color: var(--open); }
+.ronde { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; cursor: pointer; text-align: left; width: 100%; }
+.ronde:hover { border-color: var(--muted); }
+.ronde .date { min-width: 7.5em; font-size: 1.3rem; }
+.staal.genomen { border-left-color: var(--ok); }
+.staal.te-doen { border-left-color: var(--line); }
+.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 500; }
+.check input { width: 20px; height: 20px; accent-color: var(--ok); }
+.tabel-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); max-height: 320px; }
+.tabel-wrap table { border-collapse: collapse; font-size: .85rem; width: 100%; }
+.tabel-wrap th, .tabel-wrap td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; white-space: nowrap; }
+.tabel-wrap th { position: sticky; top: 0; background: var(--surface); }
 </style>
 </head>
 <body>
@@ -143,35 +161,45 @@ const SITES = [
   { id: "wzc-passionisten", naam: "WZC-Passionisten" },
   { id: "wzc-huize-nazareth", naam: "WZC-Huize Nazareth" },
   { id: "psc-leuven", naam: "PSC-Leuven" },
-  { id: "hestia", naam: "Hestia" },
 ];
-const STAALTYPES = ["Water (legionella)", "Drinkwater", "Oppervlak (hygiëne)", "Lucht", "Voeding", "Andere"];
-const TABEL = "staalnamen", BUCKET = "staalnamen-fotos";
-const UITVOERDER_KEY = "staalnamen-uitvoerder";
+// Soorten rondes. "temperatuur": per punt ook een watertemperatuur invullen.
+const TYPES = [
+  { id: "legionella", naam: "Legionella", ronde: "Ronde legionella", temperatuur: true },
+  { id: "textiel", naam: "Textielstalen", ronde: "Ronde textielstalen", temperatuur: false },
+];
+const BUCKET = "staalnamen-fotos";
 
 let sb = null, sessie = null, ready = false;
-let staalnamen = []; // {id, site, datum, gebouw, verdiep, lokaal, staaltype, staalnummer, uitvoerder, opmerkingen, fotos[], aangemaakt}
-let state = { view: "sites", site: null, type: "alle", edit: null, confirm: null };
+let lijsten = [];  // {site, type, kolommen[], punten[[...]], bijgewerkt}
+let rondes = [];   // {id, site, type, datum, kolommen[], aangemaakt}
+let punten = [];   // {id, rondeId, volgorde, waarden[], genomen, staalnummer, temperatuur, opmerkingen, fotos[]}
+let state = { view: "sites", site: null, type: null, ronde: null, filter: "alle", edit: null, confirm: null, editRonde: false, editLijst: false };
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
-const fmtDate = iso => { if (!iso) return "—"; const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; };
+const fmtDate = iso => { if (!iso) return "—"; const [y, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
 const siteNaam = id => (SITES.find(s => s.id === id) || {}).naam || id;
-const locTekst = o => [o.gebouw, o.verdiep ? "verdiep " + o.verdiep : "", o.lokaal].filter(Boolean).join(", ");
-const nieuwsteEerst = (a, b) => (b.datum || "").localeCompare(a.datum || "") || (b.aangemaakt || "").localeCompare(a.aangemaakt || "");
-const leesUitvoerder = () => { try { return localStorage.getItem(UITVOERDER_KEY) || ""; } catch { return ""; } };
-const bewaarUitvoerder = v => { try { localStorage.setItem(UITVOERDER_KEY, v); } catch {} };
+const typeVan = id => TYPES.find(t => t.id === id) || { id, naam: id, ronde: "Ronde " + id, temperatuur: false };
+const lijstVan = (site, type) => lijsten.find(l => l.site === site && l.type === type) || null;
+const rondesVan = (site, type) => rondes.filter(r => r.site === site && r.type === type).sort((a, b) => (b.datum || "").localeCompare(a.datum || "") || (b.aangemaakt || "").localeCompare(a.aangemaakt || ""));
+const puntenVan = rondeId => punten.filter(p => p.rondeId === rondeId).sort((a, b) => a.volgorde - b.volgorde);
+// Een punt toont alle ingevulde kolommen uit Excel, bv. "12 · Gebouw A · A0.12 · Douche".
+const puntTitel = (p, i) => p.waarden.filter(Boolean).join(" · ") || `Punt ${i + 1}`;
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2200);
 }
 function banner(msg) { const b = $("#banner"); b.textContent = msg || ""; b.hidden = !msg; }
+function voortgang(ps) {
+  const n = ps.filter(p => p.genomen).length;
+  return `<span class="pill ${ps.length && n === ps.length ? "ok" : ""}">${n} van ${ps.length} genomen</span>`;
+}
 
 function go(view, extra = {}) {
-  wisKeuze("o"); wisKeuze("e");
-  state = { ...state, view, edit: null, confirm: null, ...extra };
+  wisKeuze("e");
+  state = { ...state, view, edit: null, confirm: null, editRonde: false, editLijst: false, ...extra };
   render();
   window.scrollTo({ top: 0 });
 }
@@ -180,12 +208,14 @@ function go(view, extra = {}) {
 let lastKey = "";
 function render() {
   const v = $("#view");
-  const key = state.view + ":" + state.site;
+  const key = [state.view, state.site, state.type, state.ronde, state.edit, state.editLijst].join(":");
   const keep = {};
-  if (key === lastKey) v.querySelectorAll("form input[id]:not([type=file]), form textarea[id], form select[id]").forEach(el => keep[el.id] = el.value);
+  if (key === lastKey) v.querySelectorAll("form input[id]:not([type=file]), form textarea[id], form select[id]").forEach(el => keep[el.id] = el.type === "checkbox" ? el.checked : el.value);
+  if (state.view === "ronde" && ready && !rondes.find(r => r.id === state.ronde)) state.view = "type";
   if (!sessie) { v.innerHTML = viewLogin(); lastKey = ""; return; }
-  v.innerHTML = state.view === "site" ? viewSite() : viewSites();
-  for (const id in keep) { const el = document.getElementById(id); if (el && el.closest("form")) el.value = keep[id]; }
+  v.innerHTML = state.view === "site" ? viewSite() : state.view === "type" ? viewType() : state.view === "ronde" ? viewRonde() : viewSites();
+  for (const id in keep) { const el = document.getElementById(id); if (el && el.closest("form")) { if (el.type === "checkbox") el.checked = keep[id]; else el.value = keep[id]; } }
+  if (state.editLijst) toonLijstVoorbeeld();
   lastKey = key;
   toonFotos();
 }
@@ -200,104 +230,192 @@ function viewLogin() {
   </form>`;
 }
 
-function viewSites() {
-  const cards = SITES.map(s => {
-    const ss = staalnamen.filter(x => x.site === s.id);
-    const last = ss.map(x => x.datum).sort().pop();
-    return `<button class="site" data-go-site="${s.id}">
-      <h3>${esc(s.naam)}</h3>
-      <div class="stats"><span class="pill">${ss.length} ${ss.length === 1 ? "staalname" : "staalnamen"}</span></div>
-      <div class="last">${!ready ? "Laden…" : last ? "Laatste staalname " + fmtDate(last) : "Nog geen staalname"}</div>
-    </button>`;
-  }).join("");
-  return `<div style="display:grid;gap:12px"><p class="muted" style="margin:0">Kies een site om een staalname te registreren of eerdere stalen op te zoeken.</p><div class="sites">${cards}</div></div>`;
+function crumbs(...delen) {
+  return `<nav class="crumbs">${delen.map(([tekst, attr]) => attr ? `<button ${attr}>${esc(tekst)}</button>` : `<span>${esc(tekst)}</span>`).join("<span>/</span>")}</nav>`;
 }
 
-function staalForm(o) {
-  const e = o || { datum: today(), uitvoerder: leesUitvoerder() };
-  const pre = o ? "e" : "o";
-  return `<div class="row">
-      <div class="field" style="flex:0 1 170px"><label class="lbl" for="${pre}-datum">Datum</label><input type="date" id="${pre}-datum" required value="${esc(e.datum)}"></div>
-      <div class="field"><label class="lbl" for="${pre}-staaltype">Staaltype</label>
-        <select id="${pre}-staaltype" required>
-          ${o ? "" : '<option value="" disabled selected>Kies een staaltype</option>'}
-          ${STAALTYPES.concat(o && !STAALTYPES.includes(e.staaltype) ? [e.staaltype] : []).map(x => `<option ${e.staaltype === x ? "selected" : ""}>${esc(x)}</option>`).join("")}
-        </select></div>
-      <div class="field"><label class="lbl" for="${pre}-staalnummer">Staalnummer</label><input type="text" id="${pre}-staalnummer" value="${esc(e.staalnummer)}" placeholder="bv. etiket van het labo"></div>
-      <div class="field"><label class="lbl" for="${pre}-uitvoerder">Uitvoerder</label><input type="text" id="${pre}-uitvoerder" value="${esc(e.uitvoerder)}" placeholder="Naam" autocomplete="name"></div>
-      <fieldset class="field wide loc-set"><legend class="lbl">Locatie</legend>
-        <div class="row">
-          <div class="field"><label class="lbl sub" for="${pre}-gebouw">Gebouw</label><input type="text" id="${pre}-gebouw" value="${esc(e.gebouw)}" placeholder="bv. Gebouw B"></div>
-          <div class="field" style="flex-basis:110px"><label class="lbl sub" for="${pre}-verdiep">Verdiep</label><input type="text" id="${pre}-verdiep" value="${esc(e.verdiep)}" placeholder="bv. 2"></div>
-          <div class="field"><label class="lbl sub" for="${pre}-lokaal">Lokaal / tappunt</label><input type="text" id="${pre}-lokaal" value="${esc(e.lokaal)}" placeholder="bv. B2.14, douche"></div>
-        </div>
-      </fieldset>
-      <div class="field wide"><label class="lbl" for="${pre}-opmerkingen">Opmerkingen</label><textarea id="${pre}-opmerkingen" placeholder="bv. temperatuur, bijzonderheden">${esc(e.opmerkingen)}</textarea></div>
-      <div class="field wide"><span class="lbl">Foto's</span>
-        <div class="foto-veld">
-          ${fotoVoorbeelden(pre, e)}
-          <input type="file" accept="image/*" capture="environment" id="${pre}-camera" data-foto-input="${pre}">
-          <label class="btn" for="${pre}-camera">Foto nemen</label>
-          <input type="file" accept="image/*" multiple id="${pre}-bestand" data-foto-input="${pre}">
-          <label class="btn" for="${pre}-bestand">Foto's kiezen</label>
-        </div>
-      </div>
-    </div>
-    <div class="head">
-      <span></span>
-      <div class="actions">
-        ${o ? '<button type="button" class="btn" data-cancel-edit>Annuleren</button>' : ""}
-        <button class="btn primary" type="submit">${o ? "Opslaan" : "Staalname toevoegen"}</button>
-      </div>
-    </div>`;
+function viewSites() {
+  const cards = SITES.map(s => {
+    const regels = TYPES.map(t => {
+      const rs = rondesVan(s.id, t.id);
+      return `<div class="last"><strong>${esc(t.naam)}</strong>: ${!ready ? "laden…" : rs.length ? `${rs.length} ${rs.length === 1 ? "ronde" : "rondes"}, laatste ${fmtDate(rs[0].datum)}` : "nog geen ronde"}</div>`;
+    }).join("");
+    return `<button class="site" data-go-site="${s.id}"><h3>${esc(s.naam)}</h3><div>${regels}</div></button>`;
+  }).join("");
+  return `<div style="display:grid;gap:12px"><p class="muted" style="margin:0">Kies een site om een staalnameronde te starten of op te volgen.</p><div class="sites">${cards}</div></div>`;
 }
 
 function viewSite() {
   const s = state.site;
-  const all = staalnamen.filter(x => x.site === s).sort(nieuwsteEerst);
-  const shown = state.type === "alle" ? all : all.filter(x => x.staaltype === state.type);
-  const list = shown.map(o => {
-    if (state.edit === o.id) return `<form class="panel" data-edit-form="${o.id}"><h3>Staalname bewerken</h3>${staalForm(o)}</form>`;
-    const conf = state.confirm === o.id;
-    const meta = [locTekst(o), o.uitvoerder ? "door " + o.uitvoerder : ""].filter(Boolean).join(" · ");
-    return `<article class="staal">
-      <div class="staal-top">
-        <span><span class="subject">${esc(o.staaltype)}</span>${o.staalnummer ? ` <span class="muted">· nr. ${esc(o.staalnummer)}</span>` : ""}</span>
-        <span class="date">${fmtDate(o.datum)}</span>
-      </div>
-      ${meta ? `<div class="meta">${esc(meta)}</div>` : ""}
-      ${o.opmerkingen ? `<p>${esc(o.opmerkingen)}</p>` : ""}
-      ${o.fotos.length ? `<div class="fotos">${o.fotos.map(f => `<button type="button" class="duim-knop" data-groot="${esc(f)}" aria-label="Foto vergroten"><img class="duim" data-foto="${esc(f)}" alt="Foto bij staalname"></button>`).join("")}</div>` : ""}
-      <div class="staal-bottom">
-        <div class="actions">
-          ${conf
-            ? `<span class="muted" style="align-self:center">Verwijderen?</span><button class="btn small danger" data-del="${o.id}">Ja, verwijderen</button><button class="btn small" data-confirm="">Nee</button>`
-            : `<button class="btn small" data-edit="${o.id}">Bewerken</button><button class="btn small danger" data-confirm="${o.id}">Verwijderen</button>`}
+  const cards = TYPES.map(t => {
+    const rs = rondesVan(s, t.id), l = lijstVan(s, t.id);
+    return `<button class="site" data-go-type="${t.id}">
+      <h3>${esc(t.ronde)}</h3>
+      <div class="stats"><span class="pill">${rs.length} ${rs.length === 1 ? "ronde" : "rondes"}</span><span class="pill ${l && l.punten.length ? "" : "open"}">${l ? l.punten.length : 0} vaste punten</span></div>
+      <div class="last">${rs.length ? "Laatste ronde " + fmtDate(rs[0].datum) : "Nog geen ronde"}</div>
+    </button>`;
+  }).join("");
+  return `<div style="display:grid;gap:20px">
+    ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(s)])}
+    <h2>${esc(siteNaam(s))}</h2>
+    <div class="sites">${cards}</div>
+  </div>`;
+}
+
+function viewType() {
+  const s = state.site, t = typeVan(state.type);
+  const l = lijstVan(s, t.id), n = l ? l.punten.length : 0;
+  const rs = rondesVan(s, t.id);
+  const items = rs.map(r => `<button class="ronde" data-go-ronde="${r.id}"><span class="date">${fmtDate(r.datum)}</span><span class="stats">${voortgang(puntenVan(r.id))}</span></button>`).join("");
+  const nieuw = n
+    ? `<form class="panel" id="form-ronde"><h3>Nieuwe ronde</h3>
+        <p class="muted" style="margin:0">De ronde krijgt de ${n} vaste punten van deze site.</p>
+        <div class="row">
+          <div class="field" style="flex:0 1 180px"><label class="lbl" for="r-datum">Datum</label><input type="date" id="r-datum" required value="${today()}"></div>
+          <button class="btn primary" type="submit">Maak nieuwe ronde aan</button>
+        </div></form>`
+    : `<div class="panel"><h3>Nieuwe ronde</h3><p style="margin:0">Er zijn nog geen vaste punten voor deze ronde. Plak ze eerst hieronder vanuit Excel.</p></div>`;
+  return `<div style="display:grid;gap:20px">
+    ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(s), `data-go-site="${s}"`], [t.naam])}
+    <div><div class="eyebrow">${esc(siteNaam(s))}</div><h2>${esc(t.ronde)}</h2></div>
+    ${nieuw}
+    <div style="display:grid;gap:10px">
+      <h3>Rondes</h3>
+      ${!ready ? '<div class="empty">Rondes laden…</div>' : items ? `<div class="list">${items}</div>` : '<div class="empty">Nog geen rondes.</div>'}
+    </div>
+    ${viewLijst(l)}
+  </div>`;
+}
+
+function viewLijst(l) {
+  if (state.editLijst) return `<form class="panel" id="form-lijst">
+      <h3>Vaste punten plakken</h3>
+      <p class="muted" style="margin:0">Selecteer in Excel de rijen van de loopronde (met de kolomtitels erbij), kopieer ze en plak ze hieronder. De huidige lijst wordt vervangen. Rondes die al bestaan, veranderen niet.</p>
+      <div class="field wide"><label class="lbl" for="lijst-plak">Geplakt uit Excel</label><textarea id="lijst-plak" style="min-height:140px;font-family:ui-monospace,monospace;font-size:.85rem" placeholder="Plak hier (Ctrl+V)"></textarea></div>
+      <label class="check"><input type="checkbox" id="lijst-titels" checked> Eerste rij bevat de kolomtitels</label>
+      <div id="lijst-voorbeeld"></div>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-cancel-lijst>Annuleren</button><button class="btn primary" type="submit">Vaste punten opslaan</button></div>
+    </form>`;
+  const n = l ? l.punten.length : 0;
+  return `<div class="panel">
+    <div class="head"><h3>Vaste punten (${n})</h3><button class="btn small" data-edit-lijst>${n ? "Vervangen vanuit Excel" : "Plakken vanuit Excel"}</button></div>
+    ${n ? `<p class="muted" style="margin:0">Laatst aangepast op ${fmtDate(l.bijgewerkt)}.</p>${tabelHtml(l.kolommen, l.punten)}` : '<p class="muted" style="margin:0">Nog geen vaste punten.</p>'}
+  </div>`;
+}
+
+function tabelHtml(kolommen, rijen) {
+  return `<div class="tabel-wrap"><table><thead><tr><th>#</th>${kolommen.map(k => `<th>${esc(k)}</th>`).join("")}</tr></thead>
+    <tbody>${rijen.map((r, i) => `<tr><td class="muted">${i + 1}</td>${kolommen.map((_, k) => `<td>${esc(r[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function puntForm(p, t) {
+  return `<div class="row">
+      <div class="field"><label class="lbl" for="e-staalnummer">Staalnummer</label><input type="text" id="e-staalnummer" value="${esc(p.staalnummer)}" placeholder="bv. etiket van het labo"></div>
+      ${t.temperatuur ? `<div class="field" style="flex-basis:140px"><label class="lbl" for="e-temperatuur">Temperatuur (°C)</label><input type="text" inputmode="decimal" id="e-temperatuur" value="${esc(p.temperatuur)}" placeholder="bv. 58"></div>` : ""}
+      <div class="field wide"><label class="lbl" for="e-opmerkingen">Opmerkingen</label><textarea id="e-opmerkingen">${esc(p.opmerkingen)}</textarea></div>
+      <div class="field wide"><span class="lbl">Foto's</span>
+        <div class="foto-veld">
+          ${fotoVoorbeelden("e", p)}
+          <input type="file" accept="image/*" capture="environment" id="e-camera" data-foto-input="e">
+          <label class="btn" for="e-camera">Foto nemen</label>
+          <input type="file" accept="image/*" multiple id="e-bestand" data-foto-input="e">
+          <label class="btn" for="e-bestand">Foto's kiezen</label>
         </div>
+      </div>
+    </div>
+    <div class="head">
+      <label class="check"><input type="checkbox" id="e-genomen" ${p.genomen || !p.staalnummer && !p.opmerkingen ? "checked" : ""}> Genomen</label>
+      <div class="actions"><button type="button" class="btn" data-cancel-edit>Annuleren</button><button class="btn primary" type="submit">Opslaan</button></div>
+    </div>`;
+}
+
+function viewRonde() {
+  const r = rondes.find(x => x.id === state.ronde);
+  if (!r) return '<div class="empty">Ronde laden…</div>';
+  const t = typeVan(r.type);
+  const all = puntenVan(r.id);
+  const shown = state.filter === "alle" ? all : all.filter(p => state.filter === "genomen" ? p.genomen : !p.genomen);
+  const list = shown.map(p => {
+    const i = all.indexOf(p);
+    if (state.edit === p.id) return `<form class="panel" data-edit-form="${p.id}"><h3>${esc(puntTitel(p, i))}</h3>${puntForm(p, t)}</form>`;
+    const conf = state.confirm === "punt:" + p.id;
+    const ingevuld = [p.staalnummer ? "Staalnr. " + p.staalnummer : "", t.temperatuur && p.temperatuur ? p.temperatuur + " °C" : ""].filter(Boolean).join(" · ");
+    return `<article class="staal ${p.genomen ? "genomen" : "te-doen"}">
+      <div class="staal-top">
+        <span class="subject">${esc(puntTitel(p, i))}</span>
+        <span class="pill ${p.genomen ? "ok" : ""}">${p.genomen ? "Genomen" : "Te doen"}</span>
+      </div>
+      ${ingevuld ? `<div><strong>${esc(ingevuld)}</strong></div>` : ""}
+      ${p.opmerkingen ? `<p>${esc(p.opmerkingen)}</p>` : ""}
+      ${p.fotos.length ? `<div class="fotos">${p.fotos.map(f => `<button type="button" class="duim-knop" data-groot="${esc(f)}" aria-label="Foto vergroten"><img class="duim" data-foto="${esc(f)}" alt="Foto bij punt"></button>`).join("")}</div>` : ""}
+      <div class="head">
+        <label class="check"><input type="checkbox" data-genomen="${p.id}" ${p.genomen ? "checked" : ""}> Genomen</label>
+        <div class="actions">${conf
+          ? `<span class="muted" style="align-self:center">Punt uit deze ronde verwijderen?</span><button class="btn small danger" data-del-punt="${p.id}">Ja, verwijderen</button><button class="btn small" data-confirm="">Nee</button>`
+          : `<button class="btn small" data-edit="${p.id}">Invullen</button><button class="btn small danger" data-confirm="punt:${p.id}">Verwijderen</button>`}</div>
       </div>
     </article>`;
   }).join("");
-  const types = STAALTYPES.concat([...new Set(all.map(x => x.staaltype))].filter(t => !STAALTYPES.includes(t)));
-  const filt = [["alle", `Alle (${all.length})`]].concat(types.map(t => [t, `${t} (${all.filter(x => x.staaltype === t).length})`]).filter(([t]) => all.some(x => x.staaltype === t) || t === state.type))
-    .map(([t, lbl]) => `<button class="btn small" aria-pressed="${state.type === t}" data-type="${esc(t)}">${esc(lbl)}</button>`).join("");
+  const nGenomen = all.filter(p => p.genomen).length;
+  const filt = [["alle", `Alle (${all.length})`], ["te-doen", `Te doen (${all.length - nGenomen})`], ["genomen", `Genomen (${nGenomen})`]]
+    .map(([f, lbl]) => `<button class="btn small" aria-pressed="${state.filter === f}" data-filter="${f}">${lbl}</button>`).join("");
+  const confR = state.confirm === "ronde";
+  const head = state.editRonde
+    ? `<form class="panel" id="form-ronde-edit"><h3>Ronde bewerken</h3><div class="row">
+        <div class="field" style="flex:0 1 180px"><label class="lbl" for="re-datum">Datum</label><input type="date" id="re-datum" required value="${esc(r.datum)}"></div>
+        <div class="actions"><button type="button" class="btn" data-cancel-ronde>Annuleren</button><button class="btn primary" type="submit">Opslaan</button></div>
+      </div></form>`
+    : `<div class="head">
+        <div><div class="eyebrow">${esc(t.ronde)} · ${esc(siteNaam(r.site))}</div><h2>${fmtDate(r.datum)}</h2></div>
+        <div class="actions">${confR
+          ? `<span class="muted" style="align-self:center">Ronde met ${all.length} punten verwijderen?</span><button class="btn small danger" data-del-ronde>Ja, verwijderen</button><button class="btn small" data-confirm="">Nee</button>`
+          : `<button class="btn small" data-export>Excel-export</button><button class="btn small" data-edit-ronde>Bewerken</button><button class="btn small danger" data-confirm="ronde">Verwijderen</button>`}</div>
+      </div>`;
   return `<div style="display:grid;gap:20px">
-    <nav class="crumbs"><button data-go-sites>Alle sites</button><span>/</span><span>${esc(siteNaam(s))}</span></nav>
-    <h2>${esc(siteNaam(s))}</h2>
-    <form class="panel" id="form-staal"><h3>Nieuwe staalname</h3>${staalForm(null)}</form>
+    ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(r.site), `data-go-site="${r.site}"`], [t.naam, `data-go-type="${r.type}"`], [fmtDate(r.datum)])}
+    ${head}
+    <div class="stats">${voortgang(all)}</div>
     <div style="display:grid;gap:10px">
-      <div class="head"><h3>Staalnamen</h3>${all.length ? `<div class="filters">${filt}</div>` : ""}</div>
-      ${!ready ? '<div class="empty">Staalnamen laden…</div>' : shown.length ? `<div class="list">${list}</div>` : `<div class="empty">${all.length ? "Geen staalnamen van dit type." : "Nog geen staalnamen voor deze site. Voeg hierboven de eerste toe."}</div>`}
+      <div class="head"><h3>Punten</h3><div class="filters">${filt}</div></div>
+      ${shown.length ? `<div class="list">${list}</div>` : `<div class="empty">${all.length ? (state.filter === "genomen" ? "Nog geen punten genomen." : "Alle punten zijn genomen.") : "Deze ronde heeft geen punten."}</div>`}
     </div>
-    <form class="panel" id="form-export">
-      <h3>Excel-export</h3>
-      <p class="muted" style="margin:0">Exporteert de staalnamen van deze site${state.type === "alle" ? "" : ` van het type <strong>${esc(state.type)}</strong>`}. Laat de datums leeg voor alles.</p>
-      <div class="row">
-        <div class="field" style="flex:0 1 170px"><label class="lbl" for="x-van">Van</label><input type="date" id="x-van"></div>
-        <div class="field" style="flex:0 1 170px"><label class="lbl" for="x-tot">Tot en met</label><input type="date" id="x-tot"></div>
-        <button class="btn primary" type="submit">Excel-export</button>
-      </div>
+    <form class="panel" id="form-extra"><h3>Extra punt toevoegen</h3>
+      <div class="row"><div class="field"><label class="lbl" for="x-punt">Omschrijving</label><input type="text" id="x-punt" placeholder="bv. extra tappunt keuken" required></div>
+      <button class="btn" type="submit">Toevoegen</button></div>
     </form>
   </div>`;
+}
+
+/* ---------- Plakken uit Excel ---------- */
+// Excel kopieert als tekst met tabs tussen de cellen; cellen met een regeleinde staan tussen aanhalingstekens.
+function leesTabel(tekst) {
+  tekst = tekst.replace(/\r\n?/g, "\n");
+  const scheiding = tekst.includes("\t") ? "\t" : tekst.includes(";") ? ";" : "\t";
+  const rijen = []; let rij = [], cel = "", q = false;
+  for (let i = 0; i < tekst.length; i++) {
+    const c = tekst[i];
+    if (q) { if (c === '"') { if (tekst[i + 1] === '"') { cel += '"'; i++; } else q = false; } else cel += c; }
+    else if (c === '"' && cel === "") q = true;
+    else if (c === scheiding) { rij.push(cel); cel = ""; }
+    else if (c === "\n") { rij.push(cel); rijen.push(rij); rij = []; cel = ""; }
+    else cel += c;
+  }
+  if (cel || rij.length) { rij.push(cel); rijen.push(rij); }
+  return rijen.map(r => r.map(c => c.trim())).filter(r => r.some(Boolean));
+}
+function lijstUitPlak() {
+  const rijen = leesTabel($("#lijst-plak").value);
+  const titels = $("#lijst-titels").checked;
+  const breedte = Math.max(0, ...rijen.map(r => r.length));
+  const kop = titels && rijen.length ? rijen[0] : [];
+  const kolommen = Array.from({ length: breedte }, (_, i) => kop[i] || (i === 0 && !titels ? "Punt" : `Kolom ${i + 1}`));
+  const ps = (titels ? rijen.slice(1) : rijen).map(r => kolommen.map((_, i) => r[i] || ""));
+  return { kolommen, punten: ps };
+}
+function toonLijstVoorbeeld() {
+  const el = $("#lijst-voorbeeld"); if (!el) return;
+  const l = lijstUitPlak();
+  el.innerHTML = l.punten.length ? `<div style="display:grid;gap:6px"><span class="lbl">Voorbeeld: ${l.punten.length} punten</span>${tabelHtml(l.kolommen, l.punten)}</div>` : "";
 }
 
 /* ---------- Foto's (Supabase Storage, bucket "staalnamen-fotos") ---------- */
@@ -331,12 +449,12 @@ async function verklein(file) {
   c.getContext("2d").drawImage(bron, 0, 0, c.width, c.height);
   return new Promise(ok => c.toBlob(b => ok(b || file), "image/jpeg", 0.8));
 }
-// Gekozen maar nog niet opgeslagen foto's per formulier ("o" = nieuw, "e" = bewerken).
-const fotoNieuw = { o: [], e: [] };        // [{ blob, url }]
-const fotoWeg = { o: new Set(), e: new Set() }; // bestaande paden die weg moeten
-function fotoVoorbeelden(pre, e) {
-  const bestaand = (e.fotos || []).filter(p => !fotoWeg[pre].has(p)).map(p =>
-    `<div class="foto-keuze"><img class="duim" data-foto="${esc(p)}" alt="Huidige foto"><button type="button" data-foto-weg="${pre}" data-pad="${esc(p)}" aria-label="Foto verwijderen">×</button></div>`);
+// Gekozen maar nog niet opgeslagen foto's in het invulformulier.
+const fotoNieuw = { e: [] };            // [{ blob, url }]
+const fotoWeg = { e: new Set() };       // bestaande paden die weg moeten
+function fotoVoorbeelden(pre, p) {
+  const bestaand = (p.fotos || []).filter(f => !fotoWeg[pre].has(f)).map(f =>
+    `<div class="foto-keuze"><img class="duim" data-foto="${esc(f)}" alt="Huidige foto"><button type="button" data-foto-weg="${pre}" data-pad="${esc(f)}" aria-label="Foto verwijderen">×</button></div>`);
   const nieuw = fotoNieuw[pre].map((f, i) =>
     `<div class="foto-keuze"><img class="duim" src="${f.url}" alt="Gekozen foto"><button type="button" data-foto-weg="${pre}" data-i="${i}" aria-label="Foto verwijderen">×</button></div>`);
   return bestaand.concat(nieuw).join("");
@@ -345,10 +463,10 @@ function wisKeuze(pre) {
   fotoNieuw[pre].forEach(f => URL.revokeObjectURL(f.url));
   fotoNieuw[pre] = []; fotoWeg[pre] = new Set();
 }
-async function uploadNieuw(pre, site, id) {
+async function uploadNieuw(pre, map, id) {
   const paden = [];
   for (let i = 0; i < fotoNieuw[pre].length; i++) {
-    const pad = `${site}/${id}-${Date.now()}-${i}.jpg`;
+    const pad = `${map}/${id}-${Date.now()}-${i}.jpg`;
     const up = await bewaarFoto(pad, fotoNieuw[pre][i].blob).catch(err => ({ error: err }));
     if (up.error) { console.error(up.error); await wisFotos(paden); return null; }
     paden.push(pad);
@@ -378,69 +496,77 @@ async function fotoVoorExcel(pad) {
   return { base64: b64, width: c.width, height: c.height };
 }
 const MAX_FOTOS_EXCEL = 4;
-async function exporteer(site, type, van, tot) {
+async function exporteerRonde(rondeId) {
+  const r = rondes.find(x => x.id === rondeId); if (!r) return;
   let ExcelJS;
   try { ExcelJS = await laadExcelJS(); } catch { toast("Excel-export kon niet geladen worden. Controleer je internetverbinding."); return; }
-  const lijst = staalnamen.filter(x => x.site === site && (type === "alle" || x.staaltype === type) && (!van || x.datum >= van) && (!tot || x.datum <= tot))
-    .sort((a, b) => (a.datum || "").localeCompare(b.datum || "") || (a.aangemaakt || "").localeCompare(b.aangemaakt || ""));
-  const nFoto = Math.min(MAX_FOTOS_EXCEL, Math.max(0, ...lijst.map(x => x.fotos.length)));
+  const t = typeVan(r.type), lijst = puntenVan(r.id);
+  const breedte = Math.max(r.kolommen.length, ...lijst.map(p => p.waarden.length));
+  const vast = Array.from({ length: breedte }, (_, i) => r.kolommen[i] || `Kolom ${i + 1}`);
+  const nFoto = Math.min(MAX_FOTOS_EXCEL, Math.max(0, ...lijst.map(p => p.fotos.length)));
+  const kolommen = [["Nr", 5], ...vast.map(k => [k, 18]), ["Genomen", 10], ["Staalnummer", 14]];
+  if (t.temperatuur) kolommen.push(["Temperatuur (°C)", 12]);
+  kolommen.push(["Opmerkingen", 36]);
+  const opmKol = kolommen.length;
+  for (let i = 0; i < nFoto; i++) kolommen.push([nFoto === 1 ? "Foto" : `Foto ${i + 1}`, 24]);
+  const n = kolommen.length, genomen = lijst.filter(p => p.genomen).length;
 
   const wb = new ExcelJS.Workbook();
   wb.creator = "Staalnamen"; wb.created = new Date();
-  const ws = wb.addWorksheet("Staalnamen", { pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
-  const kolommen = [["Nr", 5], ["Datum", 11], ["Staalnummer", 14], ["Staaltype", 20], ["Gebouw", 14], ["Verdiep", 9], ["Lokaal / tappunt", 16], ["Uitvoerder", 16], ["Opmerkingen", 40]];
-  for (let i = 0; i < nFoto; i++) kolommen.push([nFoto === 1 ? "Foto" : `Foto ${i + 1}`, 24]);
+  const ws = wb.addWorksheet("Ronde", { pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
   ws.columns = kolommen.map(([, w]) => ({ width: w }));
-  const n = kolommen.length;
-  ws.mergeCells(1, 1, 1, n);
-  ws.getCell("A1").value = "Staalnamen";
+  ws.mergeCells(1, 1, 1, Math.max(n, 3));
+  ws.getCell("A1").value = t.ronde;
   ws.getCell("A1").font = { bold: true, size: 16 };
-  const periode = van || tot ? `${van ? fmtDate(van) : "begin"} – ${tot ? fmtDate(tot) : "vandaag"}` : "Alle datums";
-  const info = [["Site", siteNaam(site)], ["Periode", periode], ["Staaltype", type === "alle" ? "Alle" : type],
-    ["Aantal staalnamen", String(lijst.length)], ["Geëxporteerd op", new Date().toLocaleString("nl-BE")]];
+  const info = [["Site", siteNaam(r.site)], ["Datum", fmtDate(r.datum)], ["Punten", `${lijst.length} (genomen: ${genomen}, te doen: ${lijst.length - genomen})`],
+    ["Geëxporteerd op", new Date().toLocaleString("nl-BE")]];
   info.forEach(([k, v], i) => {
     const rij = ws.getRow(2 + i);
     rij.getCell(1).value = k; rij.getCell(1).font = { bold: true };
-    ws.mergeCells(2 + i, 1, 2 + i, 2); ws.mergeCells(2 + i, 3, 2 + i, n);
+    ws.mergeCells(2 + i, 1, 2 + i, 2); ws.mergeCells(2 + i, 3, 2 + i, Math.max(n, 3));
     rij.getCell(3).value = v;
   });
   const KOP = 2 + info.length + 1;
   const kop = ws.getRow(KOP);
-  kolommen.forEach(([t], i) => {
+  kolommen.forEach(([titel], i) => {
     const cel = kop.getCell(i + 1);
-    cel.value = t; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
     cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1D2220" } };
-    cel.alignment = { vertical: "middle" };
+    cel.alignment = { vertical: "middle", wrapText: true };
   });
-  kop.height = 20;
+  kop.height = 30;
   ws.views = [{ state: "frozen", ySplit: KOP }];
   ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
   const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
 
   for (let i = 0; i < lijst.length; i++) {
-    const o = lijst[i], rijNr = KOP + 1 + i;
+    const p = lijst[i], rijNr = KOP + 1 + i;
     const rij = ws.getRow(rijNr);
-    const waarden = [i + 1, fmtDate(o.datum), o.staalnummer, o.staaltype, o.gebouw, o.verdiep, o.lokaal, o.uitvoerder, o.opmerkingen];
-    for (let k = 0; k < nFoto; k++) waarden.push(k === 0 && !o.fotos.length ? "—" : "");
+    const waarden = [i + 1, ...vast.map((_, k) => p.waarden[k] || ""), p.genomen ? "Ja" : "Nee", p.staalnummer];
+    if (t.temperatuur) waarden.push(p.temperatuur);
+    waarden.push(p.fotos.length > nFoto ? [p.opmerkingen, `(+${p.fotos.length - nFoto} foto's in de app)`].filter(Boolean).join("\n") : p.opmerkingen);
+    for (let k = 0; k < nFoto; k++) waarden.push("");
     rij.values = waarden;
     rij.eachCell({ includeEmpty: true }, cel => { cel.alignment = { vertical: "top", wrapText: true }; cel.border = { top: rand, bottom: rand, left: rand, right: rand }; });
-    rij.height = Math.max(30, Math.ceil((o.opmerkingen || "").length / 45) * 15 + 6);
-    for (let k = 0; k < Math.min(nFoto, o.fotos.length); k++) {
-      const f = await fotoVoorExcel(o.fotos[k]).catch(() => null);
+    const gc = rij.getCell(vast.length + 2);
+    gc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: p.genomen ? "FFE3F2EA" : "FFFBE6E3" } };
+    gc.font = { bold: true, color: { argb: p.genomen ? "FF1D7A4C" : "FFB0261C" } };
+    rij.height = Math.max(30, Math.ceil((p.opmerkingen || "").length / 40) * 15 + 6);
+    for (let k = 0; k < Math.min(nFoto, p.fotos.length); k++) {
+      const f = await fotoVoorExcel(p.fotos[k]).catch(() => null);
       if (f) {
         const id = wb.addImage({ base64: f.base64, extension: "jpeg" });
-        ws.addImage(id, { tl: { col: 9 + k + 0.05, row: rijNr - 1 + 0.05 }, ext: { width: f.width, height: f.height }, editAs: "oneCell" });
+        ws.addImage(id, { tl: { col: opmKol + k + 0.05, row: rijNr - 1 + 0.05 }, ext: { width: f.width, height: f.height }, editAs: "oneCell" });
         rij.height = Math.max(rij.height, f.height * 0.75 + 8);
-      } else rij.getCell(10 + k).value = "(foto niet beschikbaar)";
+      } else rij.getCell(opmKol + 1 + k).value = "(foto niet beschikbaar)";
     }
-    if (o.fotos.length > nFoto) rij.getCell(9).value = [o.opmerkingen, `(+${o.fotos.length - nFoto} foto's in de app)`].filter(Boolean).join("\n");
   }
-  if (lijst.length) ws.autoFilter = { from: { row: KOP, column: 1 }, to: { row: KOP + lijst.length, column: 9 } };
-  else ws.getCell(`A${KOP + 1}`).value = "Geen staalnamen in deze selectie.";
+  if (lijst.length) ws.autoFilter = { from: { row: KOP, column: 1 }, to: { row: KOP + lijst.length, column: opmKol } };
+  else ws.getCell(`A${KOP + 1}`).value = "Geen punten in deze ronde.";
 
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const naam = `Staalnamen ${siteNaam(site)}${type === "alle" ? "" : " " + type}${van || tot ? ` ${van || "begin"} tot ${tot || today()}` : ""}.xlsx`.replace(/[\\/:*?"<>|]/g, "-");
+  const naam = `${t.ronde} ${siteNaam(r.site)} ${r.datum}.xlsx`.replace(/[\\/:*?"<>|]/g, "-");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = naam;
   document.body.appendChild(a); a.click(); a.remove();
@@ -448,16 +574,28 @@ async function exporteer(site, type, van, tot) {
   toast("Excel-bestand gedownload");
 }
 
-/* ---------- Opslag (Supabase, tabel "staalnamen") ---------- */
-const fromRow = r => ({ id: r.id, site: r.site, datum: r.datum, gebouw: r.gebouw || "", verdiep: r.verdiep || "", lokaal: r.lokaal || "",
-  staaltype: r.staaltype, staalnummer: r.staalnummer || "", uitvoerder: r.uitvoerder || "", opmerkingen: r.opmerkingen || "",
-  fotos: Array.isArray(r.fotos) ? r.fotos : [], aangemaakt: r.aangemaakt });
+/* ---------- Opslag (Supabase) ---------- */
+const lijstRij = r => ({ site: r.site, type: r.type, kolommen: r.kolommen || [], punten: Array.isArray(r.punten) ? r.punten : [], bijgewerkt: r.bijgewerkt });
+const rondeRij = r => ({ id: r.id, site: r.site, type: r.type, datum: r.datum, kolommen: r.kolommen || [], aangemaakt: r.aangemaakt });
+const puntRij = r => ({ id: r.id, rondeId: r.ronde_id, volgorde: r.volgorde || 0, waarden: r.waarden || [], genomen: !!r.genomen, staalnummer: r.staalnummer || "",
+  temperatuur: r.temperatuur || "", opmerkingen: r.opmerkingen || "", fotos: Array.isArray(r.fotos) ? r.fotos : [] });
+
+// Supabase geeft max. 1000 rijen per keer terug; haal alles op in stukken.
+async function selectAlles(tabel, sleutel) {
+  const uit = [];
+  for (let van = 0; ; van += 1000) {
+    const { data, error } = await sb.from(tabel).select("*").order(sleutel).range(van, van + 999);
+    if (error) return { error };
+    uit.push(...data);
+    if (data.length < 1000) return { data: uit, error: null };
+  }
+}
 
 async function laadAlles() {
-  const r = await sb.from(TABEL).select("*");
-  if (r.error) { banner("De gegevens konden niet geladen worden. Heb je toegang gekregen? Vraag het aan de beheerder."); return; }
+  const [l, r, p] = await Promise.all([selectAlles("staalpuntlijsten", "site"), selectAlles("staalrondes", "id"), selectAlles("staalronde_punten", "id")]);
+  if (l.error || r.error || p.error) { banner("De gegevens konden niet geladen worden. Heb je toegang gekregen? Vraag het aan de beheerder."); return; }
   banner("");
-  staalnamen = r.data.map(fromRow);
+  lijsten = l.data.map(lijstRij); rondes = r.data.map(rondeRij); punten = p.data.map(puntRij);
   ready = true;
   renderSafe();
 }
@@ -476,66 +614,83 @@ async function write(fn, okMsg) {
   }
 }
 
-function readStaalForm(pre) {
-  return {
-    datum: $(`#${pre}-datum`).value,
-    staaltype: $(`#${pre}-staaltype`).value,
-    staalnummer: $(`#${pre}-staalnummer`).value.trim(),
-    uitvoerder: $(`#${pre}-uitvoerder`).value.trim(),
-    gebouw: $(`#${pre}-gebouw`).value.trim(),
-    verdiep: $(`#${pre}-verdiep`).value.trim(),
-    lokaal: $(`#${pre}-lokaal`).value.trim(),
-    opmerkingen: $(`#${pre}-opmerkingen`).value.trim(),
-  };
-}
-
 document.addEventListener("submit", async e => {
   e.preventDefault();
   const f = e.target;
+  const knop = f.querySelector("button[type=submit]");
   if (f.id === "form-login") {
     const email = $("#l-mail").value.trim();
     if (!email) return;
-    const btn = f.querySelector("button"); btn.disabled = true;
+    knop.disabled = true;
     const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: true } });
-    btn.disabled = false;
+    knop.disabled = false;
     if (error) toast("Versturen mislukt: " + error.message);
     else f.innerHTML = `<h2>Kijk in je mailbox</h2><p style="margin:0">We stuurden een aanmeldlink naar <strong>${esc(email)}</strong>. Open die link op dit toestel.</p>`;
-  } else if (f.id === "form-staal") {
-    const d = readStaalForm("o");
-    if (!d.datum) { $("#o-datum").focus(); return; }
-    if (!d.staaltype) { $("#o-staaltype").focus(); toast("Kies een staaltype"); return; }
-    const id = crypto.randomUUID(), site = state.site;
-    const knop = f.querySelector("button[type=submit]"); knop.disabled = true;
-    const fotos = await uploadNieuw("o", site, id);
-    if (!fotos) { knop.disabled = false; toast("Een foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
-    const ok = await write(() => sb.from(TABEL).insert({ ...d, id, site, fotos }), "Staalname toegevoegd");
+  } else if (f.id === "form-lijst") {
+    const l = lijstUitPlak();
+    if (!l.punten.length) { $("#lijst-plak").focus(); toast("Plak eerst de punten uit Excel"); return; }
+    knop.disabled = true;
+    const ok = await write(() => sb.from("staalpuntlijsten").upsert({ site: state.site, type: state.type, ...l, bijgewerkt: new Date().toISOString() }), `${l.punten.length} vaste punten opgeslagen`);
     knop.disabled = false;
-    if (!ok) { wisFotos(fotos); return; }
-    if (d.uitvoerder) bewaarUitvoerder(d.uitvoerder);
-    wisKeuze("o"); lastKey = ""; render();
+    if (ok) { state.editLijst = false; render(); }
+  } else if (f.id === "form-ronde") {
+    const datum = $("#r-datum").value, l = lijstVan(state.site, state.type);
+    if (!datum || !l || !l.punten.length) return;
+    knop.disabled = true;
+    const id = crypto.randomUUID();
+    let ok = await write(() => sb.from("staalrondes").insert({ id, site: state.site, type: state.type, datum, kolommen: l.kolommen }));
+    if (ok) {
+      ok = await write(() => sb.from("staalronde_punten").insert(l.punten.map((w, i) => ({ id: crypto.randomUUID(), ronde_id: id, volgorde: i, waarden: w }))), "Ronde aangemaakt");
+      if (!ok) await sb.from("staalrondes").delete().eq("id", id);
+    }
+    knop.disabled = false;
+    if (ok) {
+      await laadAlles();
+      go("ronde", { ronde: id, filter: "alle" });
+    }
   } else if (f.dataset.editForm) {
-    const id = f.dataset.editForm, d = readStaalForm("e");
-    if (!d.datum) { $("#e-datum").focus(); return; }
-    const oud = staalnamen.find(x => x.id === id); if (!oud) return;
-    const knop = f.querySelector("button[type=submit]"); knop.disabled = true;
-    const nieuw = await uploadNieuw("e", oud.site, id);
+    const id = f.dataset.editForm, oud = punten.find(p => p.id === id); if (!oud) return;
+    const r = rondes.find(x => x.id === oud.rondeId) || {};
+    const d = {
+      staalnummer: $("#e-staalnummer").value.trim(),
+      opmerkingen: $("#e-opmerkingen").value.trim(),
+      genomen: $("#e-genomen").checked,
+    };
+    if ($("#e-temperatuur")) d.temperatuur = $("#e-temperatuur").value.trim();
+    knop.disabled = true;
+    const nieuw = await uploadNieuw("e", `${r.site}/${r.id}`, id);
     if (!nieuw) { knop.disabled = false; toast("Een foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
     const weg = oud.fotos.filter(p => fotoWeg.e.has(p));
     d.fotos = oud.fotos.filter(p => !fotoWeg.e.has(p)).concat(nieuw);
-    const ok = await write(() => sb.from(TABEL).update(d).eq("id", id), "Opgeslagen");
+    const ok = await write(() => sb.from("staalronde_punten").update(d).eq("id", id), "Opgeslagen");
     knop.disabled = false;
     if (!ok) { wisFotos(nieuw); return; }
     wisFotos(weg); wisKeuze("e"); state.edit = null; render();
-  } else if (f.id === "form-export") {
-    const van = $("#x-van").value, tot = $("#x-tot").value;
-    if (van && tot && van > tot) { toast("De begindatum ligt na de einddatum"); return; }
-    const knop = f.querySelector("button[type=submit]"); knop.disabled = true; const t = knop.textContent; knop.textContent = "Bezig…";
-    try { await exporteer(state.site, state.type, van, tot); } finally { knop.disabled = false; knop.textContent = t; }
+  } else if (f.id === "form-extra") {
+    const tekst = $("#x-punt").value.trim(); if (!tekst) return;
+    const r = rondes.find(x => x.id === state.ronde);
+    const volgorde = Math.max(-1, ...puntenVan(r.id).map(p => p.volgorde)) + 1;
+    knop.disabled = true;
+    const ok = await write(() => sb.from("staalronde_punten").insert({ id: crypto.randomUUID(), ronde_id: r.id, volgorde, waarden: [tekst] }), "Punt toegevoegd");
+    knop.disabled = false;
+    if (ok) { $("#x-punt").value = ""; }
+  } else if (f.id === "form-ronde-edit") {
+    const datum = $("#re-datum").value;
+    const ok = await write(() => sb.from("staalrondes").update({ datum }).eq("id", state.ronde), "Opgeslagen");
+    if (ok) { state.editRonde = false; render(); }
   }
 });
 
+document.addEventListener("input", e => { if (e.target.id === "lijst-plak") toonLijstVoorbeeld(); });
+
 document.addEventListener("change", async e => {
   const t = e.target;
+  if (t.id === "lijst-titels") { toonLijstVoorbeeld(); return; }
+  if (t.dataset.genomen) {
+    const ok = await write(() => sb.from("staalronde_punten").update({ genomen: t.checked }).eq("id", t.dataset.genomen));
+    if (!ok) t.checked = !t.checked;
+    return;
+  }
   if (!t.dataset.fotoInput) return;
   const pre = t.dataset.fotoInput, files = [...(t.files || [])];
   if (!files.length) return;
@@ -549,6 +704,7 @@ document.addEventListener("click", async e => {
   if (!b) return;
   const d = b.dataset;
   if (b.id === "logout") { await sb.auth.signOut(); return; }
+  if ("export" in d) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerRonde(state.ronde); } finally { b.disabled = false; b.textContent = t; } return; }
   if (d.fotoWeg) {
     const pre = d.fotoWeg;
     if (d.pad) fotoWeg[pre].add(d.pad);
@@ -557,19 +713,32 @@ document.addEventListener("click", async e => {
   }
   if (d.groot) {
     const url = await fotoUrl(d.groot); if (!url) return;
-    const ov = document.createElement("div"); ov.className = "groot"; ov.innerHTML = `<img alt="Foto bij staalname">`;
+    const ov = document.createElement("div"); ov.className = "groot"; ov.innerHTML = `<img alt="Foto bij punt">`;
     ov.querySelector("img").src = url; ov.addEventListener("click", () => ov.remove()); document.body.appendChild(ov);
     return;
   }
   if ("goSites" in d) go("sites");
-  else if (d.goSite) go("site", { site: d.goSite, type: "alle" });
-  else if (d.type) { state.type = d.type; render(); }
+  else if (d.goSite) go("site", { site: d.goSite });
+  else if (d.goType) go("type", { type: d.goType });
+  else if (d.goRonde) go("ronde", { ronde: d.goRonde, filter: "alle" });
+  else if (d.filter) { state.filter = d.filter; render(); }
   else if ("confirm" in d) { state.confirm = d.confirm || null; render(); }
-  else if (d.edit) { lastKey = ""; wisKeuze("e"); state.edit = d.edit; state.confirm = null; render(); }
+  else if (d.edit) { wisKeuze("e"); state.edit = d.edit; state.confirm = null; render(); }
   else if ("cancelEdit" in d) { wisKeuze("e"); state.edit = null; render(); }
-  else if (d.del) {
-    const fotos = (staalnamen.find(x => x.id === d.del) || {}).fotos;
-    if (await write(() => sb.from(TABEL).delete().eq("id", d.del), "Staalname verwijderd")) { wisFotos(fotos); state.confirm = null; render(); }
+  else if ("editRonde" in d) { state.editRonde = true; state.confirm = null; render(); }
+  else if ("cancelRonde" in d) { state.editRonde = false; render(); }
+  else if ("editLijst" in d) { state.editLijst = true; render(); $("#lijst-plak").focus(); }
+  else if ("cancelLijst" in d) { state.editLijst = false; render(); }
+  else if (d.delPunt) {
+    const fotos = (punten.find(p => p.id === d.delPunt) || {}).fotos;
+    if (await write(() => sb.from("staalronde_punten").delete().eq("id", d.delPunt), "Punt verwijderd")) { wisFotos(fotos); state.confirm = null; render(); }
+  }
+  else if ("delRonde" in d) {
+    const r = rondes.find(x => x.id === state.ronde);
+    // punten verdwijnen mee (on delete cascade)
+    const fotos = puntenVan(r.id).flatMap(p => p.fotos);
+    const ok = await write(() => sb.from("staalrondes").delete().eq("id", r.id), "Ronde verwijderd");
+    if (ok) { wisFotos(fotos); go("type", { site: r.site, type: r.type }); }
   }
 });
 
@@ -582,11 +751,12 @@ function zetSessie(s) {
   $("#who-mail").textContent = s ? s.user.email : "";
   if (s && !was) {
     laadAlles();
-    kanaal = sb.channel("staalnamen-wijzigingen")
-      .on("postgres_changes", { event: "*", schema: "public", table: TABEL }, () => laadAlles())
-      .subscribe();
+    kanaal = sb.channel("staalnamen-wijzigingen");
+    ["staalpuntlijsten", "staalrondes", "staalronde_punten"].forEach(table =>
+      kanaal.on("postgres_changes", { event: "*", schema: "public", table }, () => laadAlles()));
+    kanaal.subscribe();
   }
-  if (!s) { staalnamen = []; ready = false; if (kanaal) { sb.removeChannel(kanaal); kanaal = null; } }
+  if (!s) { lijsten = []; rondes = []; punten = []; ready = false; if (kanaal) { sb.removeChannel(kanaal); kanaal = null; } }
   render();
 }
 
