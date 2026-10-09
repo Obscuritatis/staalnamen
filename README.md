@@ -12,7 +12,8 @@ Sites, soorten rondes en stalen staan bovenaan in [`index.html`](index.html) (`S
 **Vaste punten**: per site en soort ronde. Plak ze vanuit Excel (met kolomtitels: Legionella en Chemische +
 bacteriologische analyse met een x, Afdeling, Verdiep, Tappunt naam) of voeg ze één voor één toe. De volgorde
 van de looproute pas je aan met de pijltjes; per punt kan je een foto van het tappunt toevoegen. Wijzigingen
-aan de looproute veranderen bestaande rondes niet.
+aan de looproute veranderen bestaande rondes niet. Met *Excel-lijst* op de pagina van de site download je een korte lijst
+van de vaste punten (welke stalen, afdeling en tappunt) om door te sturen naar wie de staalnames inplant.
 
 De app is een statische pagina (GitHub Pages), gebouwd op dezelfde basis als
 [veiligheidsrondes](https://github.com/Obscuritatis/veiligheidsrondes). Ze gebruikt hetzelfde Supabase-project
