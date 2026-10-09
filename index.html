@@ -66,6 +66,10 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .sites { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
 .site { text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; cursor: pointer; display: grid; gap: 10px; }
 .site:hover { border-color: var(--muted); }
+.kaart { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); display: grid; align-content: start; }
+.kaart:hover { border-color: var(--muted); }
+.kaart > .site { border: 0; background: none; }
+.kaart-acties { padding: 0 16px 16px; display: flex; gap: 8px; }
 .site h3 { font-size: 1.35rem; }
 .stats { display: flex; flex-wrap: wrap; gap: 6px; }
 .pill { display: inline-flex; align-items: center; gap: 4px; font-size: .78rem; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--bg); color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -272,11 +276,12 @@ function viewSite() {
   const s = state.site;
   const cards = TYPES.map(t => {
     const rs = rondesVan(s, t.id), n = vastVan(s, t.id).length;
-    return `<button class="site" data-go-type="${t.id}">
+    return `<div class="kaart"><button class="site" data-go-type="${t.id}">
       <h3>${esc(t.ronde)}</h3>
       <div class="stats"><span class="pill">${rs.length} ${rs.length === 1 ? "ronde" : "rondes"}</span><span class="pill ${n ? "" : "open"}">${n} vaste punten</span></div>
       <div class="last">${rs.length ? "Laatste ronde " + fmtDate(rs[0].datum) : "Nog geen ronde"}</div>
-    </button>`;
+    </button>
+    <div class="kaart-acties"><button class="btn small" data-lijst="${t.id}" ${n ? "" : "disabled"}>Excel-lijst</button></div></div>`;
   }).join("");
   return `<div style="display:grid;gap:20px">
     ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(s)])}
@@ -665,14 +670,70 @@ async function exporteerRonde(rondeId) {
   if (lijst.length) ws.autoFilter = { from: { row: KOP, column: 1 }, to: { row: KOP + lijst.length, column: opmKol } };
   else ws.getCell(`A${KOP + 1}`).value = "Geen punten in deze ronde.";
 
+  await downloadExcel(wb, `${t.ronde} ${siteNaam(r.site)} ${r.datum}.xlsx`);
+}
+async function downloadExcel(wb, bestandsnaam) {
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const naam = `${t.ronde} ${siteNaam(r.site)} ${r.datum}.xlsx`.replace(/[\\/:*?"<>|]/g, "-");
+  const naam = bestandsnaam.replace(/[\\/:*?"<>|]/g, "-");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = naam;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
   toast("Excel-bestand gedownload");
+}
+
+// Korte lijst van de vaste punten (welke stalen, waar) om door te sturen naar wie de staalnames inplant.
+async function exporteerLijst(site, type) {
+  let ExcelJS;
+  try { ExcelJS = await laadExcelJS(); } catch { toast("Excel-export kon niet geladen worden. Controleer je internetverbinding."); return; }
+  const t = typeVan(type), lijst = vastVan(site, type);
+  const staalKop = a => t.analyses.length === 1 ? t.naam : a.naam;
+  const kolommen = [["Nr", 5], ...t.analyses.map(a => [staalKop(a), 16]), ["Afdeling", 14], ["Tappunt", 55]];
+  const n = kolommen.length, nA = t.analyses.length;
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Staalnamen"; wb.created = new Date();
+  const ws = wb.addWorksheet("Stalen", { pageSetup: { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
+  ws.columns = kolommen.map(([, w]) => ({ width: w }));
+  ws.mergeCells(1, 1, 1, n);
+  ws.getCell("A1").value = `${t.ronde} – ${siteNaam(site)}`;
+  ws.getCell("A1").font = { bold: true, size: 16 };
+  const aantallen = t.analyses.map(a => lijst.filter(p => p.analyses.includes(a.id)).length);
+  const info = [["Site", siteNaam(site)], ["Aantal tappunten", lijst.length],
+    ["Aantal stalen", [...t.analyses.map((a, k) => `${staalKop(a)}: ${aantallen[k]}`), ...(nA > 1 ? [`Totaal: ${aantallen.reduce((x, y) => x + y, 0)}`] : [])].join(" · ")]];
+  info.forEach(([k, v], i) => {
+    const rij = ws.getRow(2 + i);
+    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true };
+    ws.mergeCells(2 + i, 1, 2 + i, 1 + nA); ws.mergeCells(2 + i, 2 + nA, 2 + i, n);
+    rij.getCell(2 + nA).value = v; rij.getCell(2 + nA).alignment = { horizontal: "left" };
+  });
+  const KOP = 2 + info.length + 1;
+  const kop = ws.getRow(KOP);
+  kolommen.forEach(([titel], i) => {
+    const cel = kop.getCell(i + 1);
+    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1D2220" } };
+    cel.alignment = { vertical: "middle", horizontal: i && i <= nA ? "center" : "left", wrapText: true };
+  });
+  kop.height = 30;
+  ws.views = [{ state: "frozen", ySplit: KOP }];
+  ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
+  const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
+  lijst.forEach((p, i) => {
+    const rij = ws.getRow(KOP + 1 + i);
+    rij.values = [i + 1, ...t.analyses.map(a => p.analyses.includes(a.id) ? "x" : ""), p.afdeling, [p.tappunt, p.verdiep && !p.tappunt.toLowerCase().includes(p.verdiep.toLowerCase()) ? `(${p.verdiep})` : ""].filter(Boolean).join(" ")];
+    rij.eachCell({ includeEmpty: true }, (cel, k) => {
+      cel.alignment = { vertical: "top", horizontal: k > 1 && k <= 1 + nA ? "center" : "left", wrapText: true };
+      cel.border = { top: rand, bottom: rand, left: rand, right: rand };
+      if (k > 1 && k <= 1 + nA && cel.value) cel.font = { bold: true };
+    });
+  });
+  const tot = ws.getRow(KOP + 1 + lijst.length);
+  tot.values = ["Totaal", ...aantallen, "", ""];
+  tot.eachCell({ includeEmpty: true }, (cel, k) => { cel.font = { bold: true }; cel.alignment = { horizontal: k > 1 && k <= 1 + nA ? "center" : "left" }; cel.border = { top: { style: "medium" } }; });
+
+  await downloadExcel(wb, `Stalen ${t.naam} ${siteNaam(site)}.xlsx`);
 }
 
 /* ---------- Opslag (Supabase) ---------- */
@@ -887,6 +948,7 @@ document.addEventListener("click", async e => {
   if (!b) return;
   const d = b.dataset;
   if (b.id === "logout") { await sb.auth.signOut(); return; }
+  if (d.lijst) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerLijst(state.site, d.lijst); } finally { b.disabled = false; b.textContent = t; } return; }
   if ("export" in d) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerRonde(state.ronde); } finally { b.disabled = false; b.textContent = t; } return; }
   if (d.fotoWeg) {
     const pre = d.fotoWeg;
