@@ -136,6 +136,9 @@ button.duim-knop { padding: 0; border: 0; background: none; cursor: zoom-in; }
 .vast { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
 .vast-tekst { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .vast-acties { grid-column: 1 / -1; justify-content: flex-end; }
+.plakvak { grid-column: 1 / -1; border: 2px dashed var(--line); border-radius: var(--radius); padding: 14px; text-align: center; color: var(--muted); cursor: pointer; font-size: .9rem; }
+.plakvak:focus, .plakvak.over { border-color: var(--accent); color: var(--fg); outline: none; background: var(--bg); }
+.plakvak:focus::after { content: " · klaar om te plakken"; font-weight: 600; }
 .nr { font-family: var(--font-display); font-weight: 700; font-size: 1.2rem; color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
 .punt-midden { display: flex; gap: 12px; justify-content: space-between; align-items: start; }
 .titel-knop { background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; cursor: zoom-in; }
@@ -188,7 +191,7 @@ let sb = null, sessie = null, ready = false;
 let vast = [];     // vaste punten: {id, site, type, volgorde, afdeling, verdiep, tappunt, analyses[], foto}
 let rondes = [];   // {id, site, type, datum, aangemaakt}
 let punten = [];   // punten van rondes: {id, rondeId, puntId, volgorde, afdeling, verdiep, tappunt, analyses[], genomen[], opmerkingen, fotos[]}
-let state = { view: "sites", site: null, type: null, ronde: null, filter: "alle", edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false };
+let state = { view: "sites", site: null, type: null, ronde: null, filter: "alle", edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false, fotoModus: false };
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -219,7 +222,7 @@ function voortgang(ps) {
 
 function go(view, extra = {}) {
   wisKeuze("e");
-  state = { ...state, view, edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false, ...extra };
+  state = { ...state, view, edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false, fotoModus: false, ...extra };
   render();
   window.scrollTo({ top: 0 });
 }
@@ -364,6 +367,7 @@ function viewVast(s, t, ps) {
         <div class="stats">${analysePills(t, p)}${p.foto ? "" : '<span class="pill">geen foto</span>'}</div>
       </div>
       ${fotoDuim(p.foto, "Foto van het tappunt")}
+      ${state.fotoModus ? `<div class="plakvak" tabindex="0" role="button" data-plak="${p.id}">${fotoBezig.has(p.id) ? "Foto opslaan…" : `Klik hier en plak een foto (Ctrl+V), of sleep er een foto in${p.foto ? ". De huidige foto wordt vervangen." : ""}`}</div>` : ""}
       <div class="actions vast-acties">${conf
         ? `<span class="muted" style="align-self:center">Verwijderen?</span><button class="btn small danger" data-del-vast="${p.id}">Ja</button><button class="btn small" data-confirm="">Nee</button>`
         : `<button class="btn small" data-schuif="${p.id}" data-richting="-1" ${i ? "" : "disabled"} aria-label="Hoger in de looproute">↑</button>
@@ -375,7 +379,9 @@ function viewVast(s, t, ps) {
   const af = siteVan(s).afkortingen;
   return `<div style="display:grid;gap:10px">
     <div class="head"><h3>Vaste punten (looproute)</h3>
-      <div class="actions"><button class="btn small" data-plakken>Plakken uit Excel</button><button class="btn small" data-nieuw-punt>Punt toevoegen</button></div></div>
+      <div class="actions"><button class="btn small" data-plakken>Plakken uit Excel</button><button class="btn small" data-nieuw-punt>Punt toevoegen</button>
+        <button class="btn small" data-foto-modus aria-pressed="${state.fotoModus}">${state.fotoModus ? "Klaar met foto's" : "Foto's toevoegen"}</button></div></div>
+    ${state.fotoModus ? `<p class="banner" style="margin:0">Kopieer in Excel een foto (klik erop, Ctrl+C), klik hier bij het juiste tappunt in het vak en druk Ctrl+V. Slepen van een fotobestand kan ook. De foto wordt meteen opgeslagen.</p>` : ""}
     ${af ? `<p class="muted" style="margin:0">${esc(af)}</p>` : ""}
     ${state.nieuwPunt ? `<form class="panel" id="form-vast"><h3>Nieuw vast punt</h3>${vastForm(null, t, "n")}
       <p class="muted" style="margin:0">Het punt komt onderaan de looproute. Een foto voeg je toe via Bewerken.</p>
@@ -819,6 +825,40 @@ document.addEventListener("submit", async e => {
 
 document.addEventListener("input", e => { if (e.target.id === "plak-tekst") toonPlakVoorbeeld(); });
 
+/* ---------- Foto's per tappunt plakken of slepen ---------- */
+const fotoBezig = new Set();
+async function zetTappuntFoto(id, bestand) {
+  const p = vast.find(x => x.id === id); if (!p || fotoBezig.has(id)) return;
+  if (!bestand || !/^image\//.test(bestand.type)) { toast("Dat is geen foto. Kopieer de foto zelf in Excel (klik erop, Ctrl+C)."); return; }
+  fotoBezig.add(id); render();
+  const blob = await verklein(bestand);
+  const pad = `${p.site}/punten/${id}-${Date.now()}.jpg`;
+  const up = await bewaarFoto(pad, blob).catch(err => ({ error: err }));
+  if (up.error) { console.error(up.error); fotoBezig.delete(id); render(); toast("De foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
+  // De oude foto blijft bewaard: oude rondes kunnen er nog naar verwijzen via dit punt.
+  const ok = await write(() => sb.from("staalpunten").update({ foto: pad }).eq("id", id), "Foto opgeslagen");
+  if (ok) p.foto = pad; else wisFotos([pad]);
+  fotoBezig.delete(id); render();
+}
+document.addEventListener("paste", e => {
+  const vak = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-plak]");
+  if (!vak) return;
+  const item = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.kind === "file" && /^image\//.test(i.type));
+  e.preventDefault();
+  if (!item) { toast("Er staat geen foto op het klembord. Kopieer de foto zelf in Excel (klik erop, Ctrl+C)."); return; }
+  zetTappuntFoto(vak.dataset.plak, item.getAsFile());
+});
+document.addEventListener("dragover", e => { const vak = e.target.closest && e.target.closest("[data-plak]"); if (vak) { e.preventDefault(); vak.classList.add("over"); } });
+document.addEventListener("dragleave", e => { const vak = e.target.closest && e.target.closest("[data-plak]"); if (vak) vak.classList.remove("over"); });
+document.addEventListener("drop", e => {
+  const vak = e.target.closest && e.target.closest("[data-plak]");
+  if (!vak) return;
+  e.preventDefault(); vak.classList.remove("over");
+  const f = [...(e.dataTransfer ? e.dataTransfer.files : [])].find(f => /^image\//.test(f.type));
+  if (!f) { toast("Sleep een fotobestand, of kopieer de foto in Excel en plak ze met Ctrl+V."); return; }
+  zetTappuntFoto(vak.dataset.plak, f);
+});
+
 document.addEventListener("change", async e => {
   const t = e.target;
   if (t.dataset.genomen) {
@@ -881,6 +921,7 @@ document.addEventListener("click", async e => {
   else if ("plakken" in d) { state.plakken = true; state.nieuwPunt = false; render(); $("#plak-tekst").focus(); }
   else if ("plakkenStop" in d) { state.plakken = false; render(); }
   else if ("nieuwPunt" in d) { state.nieuwPunt = true; render(); $("#n-afdeling").focus(); }
+  else if ("fotoModus" in d) { state.fotoModus = !state.fotoModus; state.plakken = false; state.nieuwPunt = false; render(); }
   else if ("nieuwStop" in d) { state.nieuwPunt = false; render(); }
   else if (d.delVast) {
     // De foto blijft bewaard: oude rondes kunnen er nog naar verwijzen.
