@@ -108,7 +108,13 @@ button.duim-knop { padding: 0; border: 0; background: none; cursor: zoom-in; }
 .groot.twee { gap: 16px; }
 .groot.twee img { max-width: calc(50vw - 24px); }
 @media (orientation: portrait) { .groot.twee { flex-direction: column; } .groot.twee img { max-width: calc(100vw - 32px); max-height: calc(50dvh - 24px); } }
-.duims { display: flex; gap: 6px; }
+.duims { display: flex; gap: 6px; flex-shrink: 0; }
+.duims .duim-knop { flex-shrink: 0; }
+/* Op een smal scherm staan de foto's onder de tekst, zodat ze er niet over komen. */
+@media (max-width: 560px) {
+  .punt-midden { flex-direction: column; }
+  .vast > .duims { grid-column: 2 / -1; }
+}
 .plakvakken { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .groot img { display: block; width: auto; height: auto; object-fit: contain; border-radius: 4px;
   max-width: calc(100vw - 32px);
