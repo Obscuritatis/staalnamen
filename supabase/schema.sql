@@ -13,7 +13,7 @@ end $$;
 
 -- Vaste punten (looproute) per site en soort ronde.
 -- "analyses": welke stalen op dit punt genomen worden, bv. {legionella, chemisch}.
--- "foto": foto van het tappunt, zodat je het terugvindt.
+-- "foto" en "foto2": tot 2 foto's van het tappunt, zodat je het terugvindt.
 create table if not exists public.staalpunten (
   id uuid primary key default gen_random_uuid(),
   site text not null,
@@ -27,6 +27,7 @@ create table if not exists public.staalpunten (
   aangemaakt timestamptz not null default now(),
   aangemaakt_door uuid default auth.uid()
 );
+alter table public.staalpunten add column if not exists foto2 text;
 create index if not exists staalpunten_site_type_idx on public.staalpunten(site, type, volgorde);
 
 create table if not exists public.staalrondes (

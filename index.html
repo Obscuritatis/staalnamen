@@ -105,6 +105,11 @@ textarea { min-height: 72px; resize: vertical; }
 .duim { width: 96px; height: 72px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); display: block; }
 button.duim-knop { padding: 0; border: 0; background: none; cursor: zoom-in; }
 .groot { position: fixed; inset: 0; z-index: 10; background: rgba(0,0,0,.9); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
+.groot.twee { gap: 16px; }
+.groot.twee img { max-width: calc(50vw - 24px); }
+@media (orientation: portrait) { .groot.twee { flex-direction: column; } .groot.twee img { max-width: calc(100vw - 32px); max-height: calc(50dvh - 24px); } }
+.duims { display: flex; gap: 6px; }
+.plakvakken { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .groot img { display: block; width: auto; height: auto; object-fit: contain; border-radius: 4px;
   max-width: calc(100vw - 32px);
   max-height: calc(100vh - 32px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
@@ -140,7 +145,7 @@ button.duim-knop { padding: 0; border: 0; background: none; cursor: zoom-in; }
 .vast { display: grid; grid-template-columns: auto 1fr auto; gap: 8px 12px; align-items: start; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
 .vast-tekst { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
 .vast-acties { grid-column: 1 / -1; justify-content: flex-end; }
-.plakvak { grid-column: 1 / -1; border: 2px dashed var(--line); border-radius: var(--radius); padding: 14px; text-align: center; color: var(--muted); cursor: pointer; font-size: .9rem; }
+.plakvak { border: 2px dashed var(--line); border-radius: var(--radius); padding: 14px; text-align: center; color: var(--muted); cursor: pointer; font-size: .9rem; }
 .plakvak:focus, .plakvak.over { border-color: var(--accent); color: var(--fg); outline: none; background: var(--bg); }
 .plakvak:focus::after { content: " · klaar om te plakken"; font-weight: 600; }
 .nr { font-family: var(--font-display); font-weight: 700; font-size: 1.2rem; color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 6px; }
@@ -192,7 +197,7 @@ const TYPES = [
 const BUCKET = "staalnamen-fotos";
 
 let sb = null, sessie = null, ready = false;
-let vast = [];     // vaste punten: {id, site, type, volgorde, afdeling, verdiep, tappunt, analyses[], foto}
+let vast = [];     // vaste punten: {id, site, type, volgorde, afdeling, verdiep, tappunt, analyses[], foto, foto2}
 let rondes = [];   // {id, site, type, datum, aangemaakt}
 let punten = [];   // punten van rondes: {id, rondeId, puntId, volgorde, afdeling, verdiep, tappunt, analyses[], genomen[], opmerkingen, fotos[]}
 let state = { view: "sites", site: null, type: null, ronde: null, filter: "alle", edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false, fotoModus: false };
@@ -210,7 +215,10 @@ const rondesVan = (site, type) => rondes.filter(r => r.site === site && r.type =
 const puntenVan = rondeId => punten.filter(p => p.rondeId === rondeId).sort((a, b) => a.volgorde - b.volgorde);
 const plaats = p => [p.afdeling, p.verdiep].filter(Boolean).join(" · ");
 const klaar = p => p.analyses.every(a => p.genomen.includes(a));
-const fotoVanPunt = p => (vast.find(v => v.id === p.puntId) || {}).foto || null;
+// Een tappunt heeft tot 2 foto's (kolommen foto en foto2).
+const MAX_TAPPUNT_FOTOS = 2;
+const tappuntFotos = v => v ? [v.foto, v.foto2].filter(Boolean) : [];
+const fotosVanPunt = p => tappuntFotos(vast.find(v => v.id === p.puntId));
 
 function toast(msg) {
   const t = $("#toast"); t.textContent = msg; t.hidden = false;
@@ -293,6 +301,9 @@ function viewSite() {
 function analysePills(t, p) {
   return p.analyses.map(a => `<span class="pill">${esc(analyseNaam(t, a))}</span>`).join("");
 }
+function fotoDuims(paden, alt) {
+  return paden.length ? `<div class="duims">${paden.map(f => fotoDuim(f, alt)).join("")}</div>` : "";
+}
 function fotoDuim(pad, alt) {
   return pad ? `<button type="button" class="duim-knop" data-groot="${esc(pad)}" aria-label="Foto vergroten"><img class="duim" data-foto="${esc(pad)}" alt="${esc(alt)}"></button>` : "";
 }
@@ -331,12 +342,12 @@ function vastForm(p, t, pre) {
       <fieldset class="field wide loc-set"><legend class="lbl">Stalen op dit punt</legend>
         <div class="checks">${t.analyses.map(a => `<label class="check"><input type="checkbox" id="${pre}-a-${a.id}" ${e.analyses.includes(a.id) ? "checked" : ""}> ${esc(a.naam)}</label>`).join("")}</div>
       </fieldset>
-      ${p ? `<div class="field wide"><span class="lbl">Foto van het tappunt</span>
+      ${p ? `<div class="field wide"><span class="lbl">Foto's van het tappunt (maximaal ${MAX_TAPPUNT_FOTOS})</span>
         <div class="foto-veld">
-          ${fotoVoorbeelden(pre, { fotos: p.foto ? [p.foto] : [] })}
-          <input type="file" accept="image/*" capture="environment" id="${pre}-camera" data-foto-input="${pre}" data-een>
+          ${fotoVoorbeelden(pre, { fotos: tappuntFotos(p) })}
+          <input type="file" accept="image/*" capture="environment" id="${pre}-camera" data-foto-input="${pre}" data-tappunt>
           <label class="btn" for="${pre}-camera">Foto nemen</label>
-          <input type="file" accept="image/*" id="${pre}-bestand" data-foto-input="${pre}" data-een>
+          <input type="file" accept="image/*" multiple id="${pre}-bestand" data-foto-input="${pre}" data-tappunt>
           <label class="btn" for="${pre}-bestand">Foto kiezen</label>
         </div></div>` : ""}
     </div>`;
@@ -371,8 +382,11 @@ function viewVast(s, t, ps) {
         <div class="meta">${esc(plaats(p))}</div>
         <div class="stats">${analysePills(t, p)}${p.foto ? "" : '<span class="pill">geen foto</span>'}</div>
       </div>
-      ${fotoDuim(p.foto, "Foto van het tappunt")}
-      ${state.fotoModus ? `<div class="plakvak" tabindex="0" role="button" data-plak="${p.id}">${fotoBezig.has(p.id) ? "Foto opslaan…" : `Klik hier en plak een foto (Ctrl+V), of sleep er een foto in${p.foto ? ". De huidige foto wordt vervangen." : ""}`}</div>` : ""}
+      ${fotoDuims(tappuntFotos(p), "Foto van het tappunt")}
+      ${state.fotoModus ? `<div class="plakvakken">${[1, 2].map(n => {
+        const heeft = n === 1 ? p.foto : p.foto2;
+        return `<div class="plakvak" tabindex="0" role="button" data-plak="${p.id}" data-nr="${n}">${fotoBezig.has(p.id + n) ? "Foto opslaan…" : `<strong>Foto ${n}${n === 2 ? " (indien nodig)" : ""}</strong><br>Klik hier en plak (Ctrl+V), of sleep er een foto in${heeft ? ". De huidige foto wordt vervangen." : ""}`}</div>`;
+      }).join("")}</div>` : ""}
       <div class="actions vast-acties">${conf
         ? `<span class="muted" style="align-self:center">Verwijderen?</span><button class="btn small danger" data-del-vast="${p.id}">Ja</button><button class="btn small" data-confirm="">Nee</button>`
         : `<button class="btn small" data-schuif="${p.id}" data-richting="-1" ${i ? "" : "disabled"} aria-label="Hoger in de looproute">↑</button>
@@ -386,7 +400,7 @@ function viewVast(s, t, ps) {
     <div class="head"><h3>Vaste punten (looproute)</h3>
       <div class="actions"><button class="btn small" data-plakken>Plakken uit Excel</button><button class="btn small" data-nieuw-punt>Punt toevoegen</button>
         <button class="btn small" data-foto-modus aria-pressed="${state.fotoModus}">${state.fotoModus ? "Klaar met foto's" : "Foto's toevoegen"}</button></div></div>
-    ${state.fotoModus ? `<p class="banner" style="margin:0">Kopieer in Excel een foto (klik erop, Ctrl+C), klik hier bij het juiste tappunt in het vak en druk Ctrl+V. Slepen van een fotobestand kan ook. De foto wordt meteen opgeslagen.</p>` : ""}
+    ${state.fotoModus ? `<p class="banner" style="margin:0">Kopieer in Excel een foto (klik erop, Ctrl+C), klik hier bij het juiste tappunt in het vak Foto 1 of Foto 2 en druk Ctrl+V. Slepen van een fotobestand kan ook. De foto wordt meteen opgeslagen.</p>` : ""}
     ${af ? `<p class="muted" style="margin:0">${esc(af)}</p>` : ""}
     ${state.nieuwPunt ? `<form class="panel" id="form-vast"><h3>Nieuw vast punt</h3>${vastForm(null, t, "n")}
       <p class="muted" style="margin:0">Het punt komt onderaan de looproute. Een foto voeg je toe via Bewerken.</p>
@@ -421,8 +435,8 @@ function viewRonde() {
   const all = puntenVan(r.id);
   const shown = state.filter === "alle" ? all : all.filter(p => state.filter === "genomen" ? klaar(p) : !klaar(p));
   const list = shown.map(p => {
-    const i = all.indexOf(p), ref = fotoVanPunt(p);
-    const titel = `<span class="nr">${i + 1}</span>${ref ? `<button type="button" class="titel-knop" data-groot="${esc(ref)}" title="Foto van het tappunt tonen">${esc(p.tappunt)}</button>` : esc(p.tappunt)}`;
+    const i = all.indexOf(p), refs = fotosVanPunt(p);
+    const titel = `<span class="nr">${i + 1}</span>${refs.length ? `<button type="button" class="titel-knop" data-groot="${esc(refs.join("|"))}" title="Foto van het tappunt tonen">${esc(p.tappunt)}</button>` : esc(p.tappunt)}`;
     if (state.edit === p.id) return `<form class="panel" data-edit-form="${p.id}"><h3>${titel}</h3>${plaats(p) ? `<div class="meta">${esc(plaats(p))}</div>` : ""}${puntForm(p, t)}</form>`;
     const conf = state.confirm === "punt:" + p.id;
     const nGenomen = p.analyses.filter(a => p.genomen.includes(a)).length;
@@ -436,7 +450,7 @@ function viewRonde() {
           ${plaats(p) ? `<div class="meta">${esc(plaats(p))}</div>` : ""}
           ${p.opmerkingen ? `<p>${esc(p.opmerkingen)}</p>` : ""}
         </div>
-        ${fotoDuim(ref, "Foto van het tappunt")}
+        ${fotoDuims(refs, "Foto van het tappunt")}
       </div>
       ${p.fotos.length ? `<div class="fotos">${p.fotos.map(f => fotoDuim(f, "Foto bij staalname")).join("")}</div>` : ""}
       <div class="checks">${p.analyses.map(a => `<label class="check"><input type="checkbox" data-genomen="${p.id}" data-analyse="${a}" ${p.genomen.includes(a) ? "checked" : ""}> ${esc(analyseNaam(t, a))}</label>`).join("")}</div>
@@ -738,7 +752,7 @@ async function exporteerLijst(site, type) {
 
 /* ---------- Opslag (Supabase) ---------- */
 const vastRij = r => ({ id: r.id, site: r.site, type: r.type, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: r.verdiep || "",
-  tappunt: r.tappunt || "", analyses: r.analyses || [], foto: r.foto || null });
+  tappunt: r.tappunt || "", analyses: r.analyses || [], foto: r.foto || null, foto2: r.foto2 || null });
 const rondeRij = r => ({ id: r.id, site: r.site, type: r.type, datum: r.datum, aangemaakt: r.aangemaakt });
 const puntRij = r => ({ id: r.id, rondeId: r.ronde_id, puntId: r.punt_id || null, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: r.verdiep || "",
   tappunt: r.tappunt || "", analyses: r.analyses || [], genomen: r.genomen_analyses || [],
@@ -811,7 +825,7 @@ document.addEventListener("submit", async e => {
     if (vervang && oud.length) {
       const weg = await Promise.all(oud.map(p => sb.from("staalpunten").delete().eq("id", p.id)));
       if (weg.some(x => x.error)) { knop.disabled = false; toast("De bestaande punten konden niet verwijderd worden."); laadAlles(); return; }
-      wisFotos(oud.map(p => p.foto));
+      wisFotos(oud.flatMap(tappuntFotos));
     }
     const ok = await write(() => sb.from("staalpunten").insert(ps.map((p, i) => ({ id: crypto.randomUUID(), site: state.site, type: state.type, volgorde: start + i, ...p }))), `${ps.length} punten opgeslagen`);
     knop.disabled = false;
@@ -831,8 +845,8 @@ document.addEventListener("submit", async e => {
     knop.disabled = true;
     const nieuw = await uploadNieuw("e", `${oud.site}/punten`, id);
     if (!nieuw) { knop.disabled = false; toast("De foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
-    const blijft = oud.foto && !fotoWeg.e.has(oud.foto) && !nieuw.length;
-    d.foto = nieuw[0] || (blijft ? oud.foto : null);
+    const fotos = tappuntFotos(oud).filter(f => !fotoWeg.e.has(f)).concat(nieuw);
+    d.foto = fotos[0] || null; d.foto2 = fotos[1] || null;
     const ok = await write(() => sb.from("staalpunten").update(d).eq("id", id), "Opgeslagen");
     knop.disabled = false;
     if (!ok) { wisFotos(nieuw); return; }
@@ -888,18 +902,20 @@ document.addEventListener("input", e => { if (e.target.id === "plak-tekst") toon
 
 /* ---------- Foto's per tappunt plakken of slepen ---------- */
 const fotoBezig = new Set();
-async function zetTappuntFoto(id, bestand) {
-  const p = vast.find(x => x.id === id); if (!p || fotoBezig.has(id)) return;
+async function zetTappuntFoto(id, nr, bestand) {
+  const p = vast.find(x => x.id === id), sleutel = id + nr; if (!p || fotoBezig.has(sleutel)) return;
   if (!bestand || !/^image\//.test(bestand.type)) { toast("Dat is geen foto. Kopieer de foto zelf in Excel (klik erop, Ctrl+C)."); return; }
-  fotoBezig.add(id); render();
+  fotoBezig.add(sleutel); render();
   const blob = await verklein(bestand);
   const pad = `${p.site}/punten/${id}-${Date.now()}.jpg`;
   const up = await bewaarFoto(pad, blob).catch(err => ({ error: err }));
-  if (up.error) { console.error(up.error); fotoBezig.delete(id); render(); toast("De foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
+  if (up.error) { console.error(up.error); fotoBezig.delete(sleutel); render(); toast("De foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
   // De oude foto blijft bewaard: oude rondes kunnen er nog naar verwijzen via dit punt.
-  const ok = await write(() => sb.from("staalpunten").update({ foto: pad }).eq("id", id), "Foto opgeslagen");
-  if (ok) p.foto = pad; else wisFotos([pad]);
-  fotoBezig.delete(id); render();
+  // Foto 2 zonder foto 1 schuift op naar foto 1.
+  const kol = nr === 2 && p.foto ? "foto2" : "foto";
+  const ok = await write(() => sb.from("staalpunten").update({ [kol]: pad }).eq("id", id), "Foto opgeslagen");
+  if (ok) p[kol] = pad; else wisFotos([pad]);
+  fotoBezig.delete(sleutel); render();
 }
 document.addEventListener("paste", e => {
   const vak = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-plak]");
@@ -907,7 +923,7 @@ document.addEventListener("paste", e => {
   const item = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.kind === "file" && /^image\//.test(i.type));
   e.preventDefault();
   if (!item) { toast("Er staat geen foto op het klembord. Kopieer de foto zelf in Excel (klik erop, Ctrl+C)."); return; }
-  zetTappuntFoto(vak.dataset.plak, item.getAsFile());
+  zetTappuntFoto(vak.dataset.plak, +vak.dataset.nr, item.getAsFile());
 });
 document.addEventListener("dragover", e => { const vak = e.target.closest && e.target.closest("[data-plak]"); if (vak) { e.preventDefault(); vak.classList.add("over"); } });
 document.addEventListener("dragleave", e => { const vak = e.target.closest && e.target.closest("[data-plak]"); if (vak) vak.classList.remove("over"); });
@@ -917,7 +933,7 @@ document.addEventListener("drop", e => {
   e.preventDefault(); vak.classList.remove("over");
   const f = [...(e.dataTransfer ? e.dataTransfer.files : [])].find(f => /^image\//.test(f.type));
   if (!f) { toast("Sleep een fotobestand, of kopieer de foto in Excel en plak ze met Ctrl+V."); return; }
-  zetTappuntFoto(vak.dataset.plak, f);
+  zetTappuntFoto(vak.dataset.plak, +vak.dataset.nr, f);
 });
 
 document.addEventListener("change", async e => {
@@ -932,13 +948,13 @@ document.addEventListener("change", async e => {
   if (!t.dataset.fotoInput) return;
   const pre = t.dataset.fotoInput, files = [...(t.files || [])];
   if (!files.length) return;
-  if ("een" in t.dataset) {
-    // Eén foto per tappunt: een nieuwe vervangt de vorige.
-    wisKeuze(pre);
+  let ruimte = files.length;
+  if ("tappunt" in t.dataset) {
     const oud = vast.find(p => "vast:" + p.id === state.edit);
-    if (oud && oud.foto) fotoWeg[pre].add(oud.foto);
+    ruimte = MAX_TAPPUNT_FOTOS - tappuntFotos(oud).filter(f => !fotoWeg[pre].has(f)).length - fotoNieuw[pre].length;
+    if (ruimte < files.length) toast(`Maximaal ${MAX_TAPPUNT_FOTOS} foto's per tappunt. Verwijder eerst een foto met ×.`);
   }
-  for (const file of "een" in t.dataset ? files.slice(0, 1) : files) { const blob = await verklein(file); fotoNieuw[pre].push({ blob, url: URL.createObjectURL(blob) }); }
+  for (const file of files.slice(0, Math.max(0, ruimte))) { const blob = await verklein(file); fotoNieuw[pre].push({ blob, url: URL.createObjectURL(blob) }); }
   t.value = "";
   render();
 });
@@ -957,9 +973,10 @@ document.addEventListener("click", async e => {
     render(); return;
   }
   if (d.groot) {
-    const url = await fotoUrl(d.groot); if (!url) return;
-    const ov = document.createElement("div"); ov.className = "groot"; ov.innerHTML = `<img alt="Foto">`;
-    ov.querySelector("img").src = url; ov.addEventListener("click", () => ov.remove()); document.body.appendChild(ov);
+    const urls = (await Promise.all(d.groot.split("|").map(fotoUrl))).filter(Boolean); if (!urls.length) return;
+    const ov = document.createElement("div"); ov.className = "groot" + (urls.length > 1 ? " twee" : "");
+    urls.forEach(url => { const img = document.createElement("img"); img.alt = "Foto"; img.src = url; ov.appendChild(img); });
+    ov.addEventListener("click", () => ov.remove()); document.body.appendChild(ov);
     return;
   }
   if (d.schuif) {
