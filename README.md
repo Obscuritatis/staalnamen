@@ -6,7 +6,8 @@ Per punt vink je elk staal aan dat genomen is (bij legionella soms twee: *Legion
 bacteriologisch*, bij afvalwater en linnen soms *Afvalwater* en *Linnen*) en vul je opmerkingen en foto's in. Een ronde is te exporteren
 naar Excel (met foto's).
 
-Sites: Psychiatrisch ziekenhuis Tienen, WZC Sint-Alexius, WZC-Passionisten, WZC-Huize Nazareth en PSC-Leuven.
+Sites: Psychiatrisch ziekenhuis Tienen, WZC Sint-Alexius, WZC-Passionisten, WZC-Huize Nazareth en PSC-Leuven
+(enkel legionella).
 Sites, soorten rondes en stalen staan bovenaan in [`index.html`](index.html) (`SITES`, `TYPES`).
 
 **Vaste punten**: per site en soort ronde. Plak ze vanuit Excel (met kolomtitels: Legionella en Chemische +
