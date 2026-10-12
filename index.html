@@ -220,6 +220,8 @@ const analyseNaam = (t, a) => (t.analyses.find(x => x.id === a) || { naam: a }).
 const vastVan = (site, type) => vast.filter(p => p.site === site && p.type === type).sort((a, b) => a.volgorde - b.volgorde);
 const rondesVan = (site, type) => rondes.filter(r => r.site === site && r.type === type).sort((a, b) => (b.datum || "").localeCompare(a.datum || "") || (b.aangemaakt || "").localeCompare(a.aangemaakt || ""));
 const puntenVan = rondeId => punten.filter(p => p.rondeId === rondeId).sort((a, b) => a.volgorde - b.volgorde);
+// Een verdiep dat enkel een cijfer is ("1", "-1", "0") wordt "Verdiep 1".
+const verdiepTekst = v => /^-?\d+$/.test((v || "").trim()) ? `Verdiep ${v.trim()}` : (v || "");
 const plaats = p => [p.afdeling, p.verdiep].filter(Boolean).join(" · ");
 const klaar = p => p.analyses.every(a => p.genomen.includes(a));
 // Een tappunt heeft tot 2 foto's (kolommen foto en foto2).
@@ -530,7 +532,7 @@ function puntenUitPlak(tekst, t) {
   if (kol.tappunt < 0) return { punten: [], fout: "Geen kolom Tappunt gevonden. Kopieer ook de rij met de kolomtitels." };
   const cel = (r, i) => i >= 0 ? (r[i] || "") : "";
   const punten = rijen.slice(1).map(r => ({
-    afdeling: cel(r, kol.afdeling), verdiep: cel(r, kol.verdiep), tappunt: cel(r, kol.tappunt),
+    afdeling: cel(r, kol.afdeling), verdiep: verdiepTekst(cel(r, kol.verdiep)), tappunt: cel(r, kol.tappunt),
     analyses: kol.analyses.length ? kol.analyses.filter(([, i]) => cel(r, i)).map(([a]) => a) : [t.analyses[0].id],
   })).filter(p => p.tappunt);
   return { punten, fout: "" };
@@ -758,10 +760,10 @@ async function exporteerLijst(site, type) {
 }
 
 /* ---------- Opslag (Supabase) ---------- */
-const vastRij = r => ({ id: r.id, site: r.site, type: r.type, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: r.verdiep || "",
+const vastRij = r => ({ id: r.id, site: r.site, type: r.type, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: verdiepTekst(r.verdiep),
   tappunt: r.tappunt || "", analyses: r.analyses || [], foto: r.foto || null, foto2: r.foto2 || null });
 const rondeRij = r => ({ id: r.id, site: r.site, type: r.type, datum: r.datum, aangemaakt: r.aangemaakt });
-const puntRij = r => ({ id: r.id, rondeId: r.ronde_id, puntId: r.punt_id || null, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: r.verdiep || "",
+const puntRij = r => ({ id: r.id, rondeId: r.ronde_id, puntId: r.punt_id || null, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: verdiepTekst(r.verdiep),
   tappunt: r.tappunt || "", analyses: r.analyses || [], genomen: r.genomen_analyses || [],
   opmerkingen: r.opmerkingen || "", fotos: Array.isArray(r.fotos) ? r.fotos : [] });
 
