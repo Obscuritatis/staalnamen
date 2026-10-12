@@ -195,9 +195,10 @@ const TYPES = [
     { id: "legionella", naam: "Legionella", kop: /legionel/i },
     { id: "chemisch", naam: "Chemisch + bacteriologisch", kop: /chemi|bacterio/i },
   ] },
-  // De id "textiel" blijft intern zo, zodat bestaande gegevens blijven werken.
+  // De ids "textiel" blijven intern zo, zodat bestaande gegevens blijven werken: het staal "textiel" is afvalwater.
   { id: "textiel", naam: "Afvalwater en linnen", ronde: "Ronde afvalwater en linnen", analyses: [
-    { id: "textiel", naam: "Staal genomen", kop: /afval|linnen|textiel|staal/i },
+    { id: "textiel", naam: "Afvalwater", kop: /afval/i },
+    { id: "linnen", naam: "Linnen", kop: /linnen|textiel/i },
   ] },
 ];
 const BUCKET = "staalnamen-fotos";

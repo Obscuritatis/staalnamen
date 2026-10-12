@@ -3,14 +3,14 @@
 Webapp om staalnamerondes bij te houden. Per site kies je een soort ronde (*Legionella* of *Afvalwater en linnen*)
 en maak je een nieuwe ronde aan. Elke ronde krijgt de vaste punten (looproute) van die site en soort.
 Per punt vink je elk staal aan dat genomen is (bij legionella soms twee: *Legionella* en *Chemisch +
-bacteriologisch*) en vul je opmerkingen en foto's in. Een ronde is te exporteren
+bacteriologisch*, bij afvalwater en linnen soms *Afvalwater* en *Linnen*) en vul je opmerkingen en foto's in. Een ronde is te exporteren
 naar Excel (met foto's).
 
 Sites: Psychiatrisch ziekenhuis Tienen, WZC Sint-Alexius, WZC-Passionisten, WZC-Huize Nazareth en PSC-Leuven.
 Sites, soorten rondes en stalen staan bovenaan in [`index.html`](index.html) (`SITES`, `TYPES`).
 
 **Vaste punten**: per site en soort ronde. Plak ze vanuit Excel (met kolomtitels: Legionella en Chemische +
-bacteriologische analyse met een x, Afdeling, Verdiep, Tappunt naam) of voeg ze één voor één toe. De volgorde
+bacteriologische analyse, of Afvalwater en Linnen, met een x, Afdeling, Verdiep, Tappunt naam) of voeg ze één voor één toe. De volgorde
 van de looproute pas je aan met de pijltjes; per punt kan je tot 2 foto's van het tappunt toevoegen. Wijzigingen
 aan de looproute veranderen bestaande rondes niet. Met *Excel-lijst* op de pagina van de site download je een korte lijst
 van de vaste punten (welke stalen, afdeling en tappunt) om door te sturen naar wie de staalnames inplant.
