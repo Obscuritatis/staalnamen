@@ -186,7 +186,7 @@ const SITES = [
   { id: "wzc-passionisten", naam: "WZC-Passionisten" },
   { id: "wzc-huize-nazareth", naam: "WZC-Huize Nazareth",
     afkortingen: "HH = Heilig Hart, STE = Sint-Elisabeth, STF = Sint-Franciscus, STJ = Sint-Jozef, TED = technische dienst" },
-  { id: "psc-leuven", naam: "PSC-Leuven" },
+  { id: "psc-leuven", naam: "PSC-Leuven", types: ["legionella"] },  // geen afvalwater en linnen
 ];
 // Soorten rondes en de stalen (analyses) die er per punt genomen kunnen worden.
 // "kop": herkent de kolom in Excel.
@@ -215,6 +215,8 @@ const today = () => { const d = new Date(); return d.getFullYear() + "-" + Strin
 const fmtDate = iso => { if (!iso) return "—"; const [y, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
 const siteVan = id => SITES.find(s => s.id === id) || { id, naam: id };
 const siteNaam = id => siteVan(id).naam;
+// Soorten rondes die op een site genomen worden (standaard alle).
+const typesVan = siteId => { const s = SITES.find(x => x.id === siteId); return s && s.types ? TYPES.filter(t => s.types.includes(t.id)) : TYPES; };
 const typeVan = id => TYPES.find(t => t.id === id) || { id, naam: id, ronde: "Ronde " + id, analyses: [] };
 const analyseNaam = (t, a) => (t.analyses.find(x => x.id === a) || { naam: a }).naam;
 const vastVan = (site, type) => vast.filter(p => p.site === site && p.type === type).sort((a, b) => a.volgorde - b.volgorde);
@@ -280,7 +282,7 @@ function crumbs(...delen) {
 
 function viewSites() {
   const cards = SITES.map(s => {
-    const regels = TYPES.map(t => {
+    const regels = typesVan(s.id).map(t => {
       const rs = rondesVan(s.id, t.id);
       return `<div class="last"><strong>${esc(t.naam)}</strong>: ${!ready ? "laden…" : rs.length ? `${rs.length} ${rs.length === 1 ? "ronde" : "rondes"}, laatste ${fmtDate(rs[0].datum)}` : "nog geen ronde"}</div>`;
     }).join("");
@@ -291,7 +293,7 @@ function viewSites() {
 
 function viewSite() {
   const s = state.site;
-  const cards = TYPES.map(t => {
+  const cards = typesVan(s).map(t => {
     const rs = rondesVan(s, t.id), n = vastVan(s, t.id).length;
     return `<div class="kaart"><button class="site" data-go-type="${t.id}">
       <h3>${esc(t.ronde)}</h3>
