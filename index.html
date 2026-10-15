@@ -415,7 +415,7 @@ function viewVast(s, t, ps) {
   const af = siteVan(s).afkortingen;
   return `<div style="display:grid;gap:10px">
     <div class="head"><h3>Vaste punten (looproute)</h3>
-      <div class="actions"><button class="btn small" data-plakken>Plakken uit Excel</button><button class="btn small" data-nieuw-punt>Punt toevoegen</button>
+      <div class="actions"><button class="btn small" data-lijst="${t.id}" ${ps.length ? "" : "disabled"} title="Lijst voor het labo: welke stalen en waar">Excel-lijst</button><button class="btn small" data-plakken>Plakken uit Excel</button><button class="btn small" data-nieuw-punt>Punt toevoegen</button>
         <button class="btn small" data-foto-modus aria-pressed="${state.fotoModus}">${state.fotoModus ? "Klaar met foto's" : "Foto's toevoegen"}</button></div></div>
     ${state.fotoModus ? `<p class="banner" style="margin:0">Kopieer in Excel een foto (klik erop, Ctrl+C), klik hier bij het juiste tappunt in het vak Foto 1 of Foto 2 en druk Ctrl+V. Slepen van een fotobestand kan ook. De foto wordt meteen opgeslagen.</p>` : ""}
     ${af ? `<p class="muted" style="margin:0">${esc(af)}</p>` : ""}
