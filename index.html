@@ -632,6 +632,14 @@ async function fotoVoorExcel(pad) {
   return { base64: b64, width: c.width, height: c.height };
 }
 const MAX_FOTOS_EXCEL = 4;
+// Zet een foto in een cel (kolom k0 is 0-gebaseerd) en maakt de rij hoog genoeg.
+async function fotoInCel(wb, ws, rij, rijNr, k0, pad) {
+  const f = await fotoVoorExcel(pad).catch(() => null);
+  if (!f) { rij.getCell(k0 + 1).value = "(foto niet beschikbaar)"; return; }
+  const id = wb.addImage({ base64: f.base64, extension: "jpeg" });
+  ws.addImage(id, { tl: { col: k0 + 0.05, row: rijNr - 1 + 0.05 }, ext: { width: f.width, height: f.height }, editAs: "oneCell" });
+  rij.height = Math.max(rij.height || 15, f.height * 0.75 + 8);
+}
 async function exporteerRonde(rondeId) {
   const r = rondes.find(x => x.id === rondeId); if (!r) return;
   let ExcelJS;
@@ -640,7 +648,9 @@ async function exporteerRonde(rondeId) {
   const nFoto = Math.min(MAX_FOTOS_EXCEL, Math.max(0, ...lijst.map(p => p.fotos.length)));
   const kolommen = [["Nr", 5], ["Afdeling", 14], ["Verdiep", 11], ["Tappunt", 40], ...t.analyses.map(a => [a.naam, 14]), ["Opmerkingen", 36]];
   const opmKol = kolommen.length;
-  for (let i = 0; i < nFoto; i++) kolommen.push([nFoto === 1 ? "Foto" : `Foto ${i + 1}`, 24]);
+  const nTap = Math.max(0, ...lijst.map(p => fotosVanPunt(p).length));
+  for (let i = 0; i < nTap; i++) kolommen.push([nTap === 1 ? "Foto tappunt" : `Foto tappunt ${i + 1}`, 24]);
+  for (let i = 0; i < nFoto; i++) kolommen.push([nFoto === 1 ? "Foto staalname" : `Foto staalname ${i + 1}`, 24]);
   const n = kolommen.length;
 
   const wb = new ExcelJS.Workbook();
@@ -679,7 +689,7 @@ async function exporteerRonde(rondeId) {
     const rij = ws.getRow(rijNr);
     const waarden = [i + 1, p.afdeling, p.verdiep, p.tappunt, ...t.analyses.map(a => !p.analyses.includes(a.id) ? "—" : p.genomen.includes(a.id) ? "Genomen" : "Niet genomen")];
     waarden.push(p.fotos.length > nFoto ? [p.opmerkingen, `(+${p.fotos.length - nFoto} foto's in de app)`].filter(Boolean).join("\n") : p.opmerkingen);
-    for (let k = 0; k < nFoto; k++) waarden.push("");
+    for (let k = 0; k < nTap + nFoto; k++) waarden.push("");
     rij.values = waarden;
     rij.eachCell({ includeEmpty: true }, cel => { cel.alignment = { vertical: "top", wrapText: true }; cel.border = { top: rand, bottom: rand, left: rand, right: rand }; });
     t.analyses.forEach((a, k) => {
@@ -689,14 +699,9 @@ async function exporteerRonde(rondeId) {
       gc.font = { bold: true, color: { argb: ja ? "FF1D7A4C" : "FFB0261C" } };
     });
     rij.height = Math.max(30, Math.ceil(Math.max((p.opmerkingen || "").length / 40, (p.tappunt || "").length / 45)) * 15 + 6);
-    for (let k = 0; k < Math.min(nFoto, p.fotos.length); k++) {
-      const f = await fotoVoorExcel(p.fotos[k]).catch(() => null);
-      if (f) {
-        const id = wb.addImage({ base64: f.base64, extension: "jpeg" });
-        ws.addImage(id, { tl: { col: opmKol + k + 0.05, row: rijNr - 1 + 0.05 }, ext: { width: f.width, height: f.height }, editAs: "oneCell" });
-        rij.height = Math.max(rij.height, f.height * 0.75 + 8);
-      } else rij.getCell(opmKol + 1 + k).value = "(foto niet beschikbaar)";
-    }
+    const tap = fotosVanPunt(p);
+    for (let k = 0; k < tap.length; k++) await fotoInCel(wb, ws, rij, rijNr, opmKol + k, tap[k]);
+    for (let k = 0; k < Math.min(nFoto, p.fotos.length); k++) await fotoInCel(wb, ws, rij, rijNr, opmKol + nTap + k, p.fotos[k]);
   }
   if (lijst.length) ws.autoFilter = { from: { row: KOP, column: 1 }, to: { row: KOP + lijst.length, column: opmKol } };
   else ws.getCell(`A${KOP + 1}`).value = "Geen punten in deze ronde.";
@@ -721,6 +726,8 @@ async function exporteerLijst(site, type) {
   const t = typeVan(type), lijst = vastVan(site, type);
   const staalKop = a => t.analyses.length === 1 ? t.naam : a.naam;
   const kolommen = [["Nr", 5], ...t.analyses.map(a => [staalKop(a), 16]), ["Afdeling", 14], ["Tappunt", 55]];
+  const fotoKol = kolommen.length, nTap = Math.max(0, ...lijst.map(p => tappuntFotos(p).length));
+  for (let i = 0; i < nTap; i++) kolommen.push([nTap === 1 ? "Foto" : `Foto ${i + 1}`, 24]);
   const n = kolommen.length, nA = t.analyses.length;
 
   const wb = new ExcelJS.Workbook();
@@ -751,15 +758,17 @@ async function exporteerLijst(site, type) {
   ws.views = [{ state: "frozen", ySplit: KOP }];
   ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
   const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
-  lijst.forEach((p, i) => {
-    const rij = ws.getRow(KOP + 1 + i);
-    rij.values = [i + 1, ...t.analyses.map(a => p.analyses.includes(a.id) ? "x" : ""), p.afdeling, [p.tappunt, p.verdiep && !p.tappunt.toLowerCase().includes(p.verdiep.toLowerCase()) ? `(${p.verdiep})` : ""].filter(Boolean).join(" ")];
+  for (let i = 0; i < lijst.length; i++) {
+    const p = lijst[i], rijNr = KOP + 1 + i, rij = ws.getRow(rijNr);
+    rij.values = [i + 1, ...t.analyses.map(a => p.analyses.includes(a.id) ? "x" : ""), p.afdeling, [p.tappunt, p.verdiep && !p.tappunt.toLowerCase().includes(p.verdiep.toLowerCase()) ? `(${p.verdiep})` : ""].filter(Boolean).join(" "), ...Array(nTap).fill("")];
     rij.eachCell({ includeEmpty: true }, (cel, k) => {
       cel.alignment = { vertical: "top", horizontal: k > 1 && k <= 1 + nA ? "center" : "left", wrapText: true };
       cel.border = { top: rand, bottom: rand, left: rand, right: rand };
       if (k > 1 && k <= 1 + nA && cel.value) cel.font = { bold: true };
     });
-  });
+    const fotos = tappuntFotos(p);
+    for (let k = 0; k < fotos.length; k++) await fotoInCel(wb, ws, rij, rijNr, fotoKol + k, fotos[k]);
+  }
   const tot = ws.getRow(KOP + 1 + lijst.length);
   tot.values = ["Totaal", ...aantallen, "", ""];
   tot.eachCell({ includeEmpty: true }, (cel, k) => { cel.font = { bold: true }; cel.alignment = { horizontal: k > 1 && k <= 1 + nA ? "center" : "left" }; cel.border = { top: { style: "medium" } }; });
