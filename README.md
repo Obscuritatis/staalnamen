@@ -36,6 +36,9 @@ en dezelfde aanmelding met een link per e-mail, maar eigen tabellen (`staalpunte
 4. **GitHub Pages**: repository > *Settings > Pages* > *Deploy from a branch* > `main` / `(root)`.
 
 De koppeling met Supabase staat in [`config.js`](config.js) (zelfde project als de veiligheidsrondes).
+De app laadt niets van andere sites: de bibliotheken staan in [`vendor/`](vendor/), de lettertypes in [`fonts/`](fonts/).
+Een Content Security Policy bovenaan [`index.html`](index.html) laat enkel code van de site zelf toe en verbindingen met
+het Supabase-project. Verander je ooit het Supabase-project in `config.js`, pas dan ook dat adres in de CSP aan.
 
 ## Opmerkingen
 
