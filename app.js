@@ -1,0 +1,896 @@
+const SITES = [
+  { id: "pz-tienen", naam: "Psychiatrisch ziekenhuis Tienen" },
+  { id: "wzc-sint-alexius", naam: "WZC Sint-Alexius" },
+  { id: "wzc-passionisten", naam: "WZC-Passionisten" },
+  { id: "wzc-huize-nazareth", naam: "WZC-Huize Nazareth",
+    afkortingen: "HH = Heilig Hart, STE = Sint-Elisabeth, STF = Sint-Franciscus, STJ = Sint-Jozef, TED = technische dienst" },
+  { id: "psc-leuven", naam: "PSC-Leuven", types: ["legionella"] },  // geen afvalwater en linnen
+];
+// Soorten rondes en de stalen (analyses) die er per punt genomen kunnen worden.
+// "kop": herkent de kolom in Excel.
+const TYPES = [
+  { id: "legionella", naam: "Legionella", ronde: "Ronde legionella", analyses: [
+    { id: "legionella", naam: "Legionella", kop: /legionel/i },
+    { id: "chemisch", naam: "Chemisch + bacteriologisch", kop: /chemi|bacterio/i },
+  ] },
+  // De ids "textiel" blijven intern zo, zodat bestaande gegevens blijven werken: het staal "textiel" is afvalwater.
+  { id: "textiel", naam: "Afvalwater en linnen", ronde: "Ronde afvalwater en linnen", analyses: [
+    { id: "textiel", naam: "Afvalwater", kop: /afval/i },
+    { id: "linnen", naam: "Linnen", kop: /linnen|textiel/i },
+  ] },
+];
+const BUCKET = "staalnamen-fotos";
+
+let sb = null, sessie = null, ready = false;
+let vast = [];     // vaste punten: {id, site, type, volgorde, afdeling, verdiep, tappunt, analyses[], foto, foto2}
+let rondes = [];   // {id, site, type, datum, aangemaakt}
+let punten = [];   // punten van rondes: {id, rondeId, puntId, volgorde, afdeling, verdiep, tappunt, analyses[], genomen[], opmerkingen, fotos[]}
+let state = { view: "sites", site: null, type: null, ronde: null, filter: "alle", edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false, fotoModus: false };
+
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const fmtDate = iso => { if (!iso) return "—"; const [y, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
+const siteVan = id => SITES.find(s => s.id === id) || { id, naam: id };
+const siteNaam = id => siteVan(id).naam;
+// Soorten rondes die op een site genomen worden (standaard alle).
+const typesVan = siteId => { const s = SITES.find(x => x.id === siteId); return s && s.types ? TYPES.filter(t => s.types.includes(t.id)) : TYPES; };
+const typeVan = id => TYPES.find(t => t.id === id) || { id, naam: id, ronde: "Ronde " + id, analyses: [] };
+const analyseNaam = (t, a) => (t.analyses.find(x => x.id === a) || { naam: a }).naam;
+const vastVan = (site, type) => vast.filter(p => p.site === site && p.type === type).sort((a, b) => a.volgorde - b.volgorde);
+const rondesVan = (site, type) => rondes.filter(r => r.site === site && r.type === type).sort((a, b) => (b.datum || "").localeCompare(a.datum || "") || (b.aangemaakt || "").localeCompare(a.aangemaakt || ""));
+const puntenVan = rondeId => punten.filter(p => p.rondeId === rondeId).sort((a, b) => a.volgorde - b.volgorde);
+// Een verdiep dat enkel een cijfer is ("1", "-1", "0") wordt "Verdiep 1".
+const verdiepTekst = v => /^-?\d+$/.test((v || "").trim()) ? `Verdiep ${v.trim()}` : (v || "");
+const plaats = p => [p.afdeling, p.verdiep].filter(Boolean).join(" · ");
+const klaar = p => p.analyses.every(a => p.genomen.includes(a));
+// Een tappunt heeft tot 2 foto's (kolommen foto en foto2).
+const MAX_TAPPUNT_FOTOS = 2;
+const tappuntFotos = v => v ? [v.foto, v.foto2].filter(Boolean) : [];
+const fotosVanPunt = p => tappuntFotos(vast.find(v => v.id === p.puntId));
+
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 2200);
+}
+function banner(msg) { const b = $("#banner"); b.textContent = msg || ""; b.hidden = !msg; }
+// Voortgang in stalen: een punt met twee analyses telt voor twee stalen.
+function voortgang(ps) {
+  const nodig = ps.reduce((n, p) => n + p.analyses.length, 0);
+  const genomen = ps.reduce((n, p) => n + p.analyses.filter(a => p.genomen.includes(a)).length, 0);
+  return `<span class="pill ${nodig && genomen === nodig ? "ok" : ""}">${genomen} van ${nodig} stalen genomen</span>`;
+}
+
+function go(view, extra = {}) {
+  wisKeuze("e");
+  state = { ...state, view, edit: null, confirm: null, editRonde: false, plakken: false, nieuwPunt: false, fotoModus: false, ...extra };
+  render();
+  window.scrollTo({ top: 0 });
+}
+
+/* ---------- Views ---------- */
+let lastKey = "";
+function render() {
+  const v = $("#view");
+  const key = [state.view, state.site, state.type, state.ronde, state.edit, state.plakken, state.nieuwPunt].join(":");
+  const keep = {};
+  if (key === lastKey) v.querySelectorAll("form input[id]:not([type=file]), form textarea[id], form select[id]").forEach(el => keep[el.id] = el.type === "checkbox" ? el.checked : el.value);
+  if (state.view === "ronde" && ready && !rondes.find(r => r.id === state.ronde)) state.view = "type";
+  if (!sessie) { v.innerHTML = viewLogin(); lastKey = ""; return; }
+  v.innerHTML = state.view === "site" ? viewSite() : state.view === "type" ? viewType() : state.view === "ronde" ? viewRonde() : viewSites();
+  for (const id in keep) { const el = document.getElementById(id); if (el && el.closest("form")) { if (el.type === "checkbox") el.checked = keep[id]; else el.value = keep[id]; } }
+  if (state.plakken) toonPlakVoorbeeld();
+  lastKey = key;
+  toonFotos();
+}
+
+function viewLogin() {
+  if (!sb) return '<div class="empty">Laden…</div>';
+  return `<form class="panel login" id="form-login">
+    <h2>Aanmelden</h2>
+    <p class="muted" style="margin:0">Vul je e-mailadres in. Je krijgt een mail met een link om je aan te melden.</p>
+    <div class="field"><label class="lbl" for="l-mail">E-mailadres</label><input type="text" inputmode="email" autocomplete="email" id="l-mail" required></div>
+    <button class="btn primary" type="submit">Stuur aanmeldlink</button>
+  </form>`;
+}
+
+function crumbs(...delen) {
+  return `<nav class="crumbs">${delen.map(([tekst, attr]) => attr ? `<button ${attr}>${esc(tekst)}</button>` : `<span>${esc(tekst)}</span>`).join("<span>/</span>")}</nav>`;
+}
+
+function viewSites() {
+  const cards = SITES.map(s => {
+    const regels = typesVan(s.id).map(t => {
+      const rs = rondesVan(s.id, t.id);
+      return `<div class="last"><strong>${esc(t.naam)}</strong>: ${!ready ? "laden…" : rs.length ? `${rs.length} ${rs.length === 1 ? "ronde" : "rondes"}, laatste ${fmtDate(rs[0].datum)}` : "nog geen ronde"}</div>`;
+    }).join("");
+    return `<button class="site" data-go-site="${s.id}"><h3>${esc(s.naam)}</h3><div>${regels}</div></button>`;
+  }).join("");
+  return `<div style="display:grid;gap:12px"><p class="muted" style="margin:0">Kies een site om een staalnameronde te starten of op te volgen.</p><div class="sites">${cards}</div></div>`;
+}
+
+function viewSite() {
+  const s = state.site;
+  const cards = typesVan(s).map(t => {
+    const rs = rondesVan(s, t.id), n = vastVan(s, t.id).length;
+    return `<div class="kaart"><button class="site" data-go-type="${t.id}">
+      <h3>${esc(t.ronde)}</h3>
+      <div class="stats"><span class="pill">${rs.length} ${rs.length === 1 ? "ronde" : "rondes"}</span><span class="pill ${n ? "" : "open"}">${n} vaste punten</span></div>
+      <div class="last">${rs.length ? "Laatste ronde " + fmtDate(rs[0].datum) : "Nog geen ronde"}</div>
+    </button>
+    <div class="kaart-acties"><button class="btn small" data-lijst="${t.id}" ${n ? "" : "disabled"}>Excel-lijst</button></div></div>`;
+  }).join("");
+  return `<div style="display:grid;gap:20px">
+    ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(s)])}
+    <h2>${esc(siteNaam(s))}</h2>
+    <div class="sites">${cards}</div>
+  </div>`;
+}
+
+function analysePills(t, p) {
+  return p.analyses.map(a => `<span class="pill">${esc(analyseNaam(t, a))}</span>`).join("");
+}
+function fotoDuims(paden, alt) {
+  return paden.length ? `<div class="duims">${paden.map(f => fotoDuim(f, alt)).join("")}</div>` : "";
+}
+function fotoDuim(pad, alt) {
+  return pad ? `<button type="button" class="duim-knop" data-groot="${esc(pad)}" aria-label="Foto vergroten"><img class="duim" data-foto="${esc(pad)}" alt="${esc(alt)}"></button>` : "";
+}
+
+function viewType() {
+  const s = state.site, t = typeVan(state.type);
+  const ps = vastVan(s, t.id);
+  const rs = rondesVan(s, t.id);
+  const items = rs.map(r => `<button class="ronde" data-go-ronde="${r.id}"><span class="date">${fmtDate(r.datum)}</span><span class="stats">${voortgang(puntenVan(r.id))}</span></button>`).join("");
+  const nieuw = ps.length
+    ? `<form class="panel" id="form-ronde"><h3>Nieuwe ronde</h3>
+        <p class="muted" style="margin:0">De ronde krijgt de ${ps.length} vaste punten hieronder, in deze volgorde.</p>
+        <div class="row">
+          <div class="field" style="flex:0 1 180px"><label class="lbl" for="r-datum">Datum</label><input type="date" id="r-datum" required value="${today()}"></div>
+          <button class="btn primary" type="submit">Maak nieuwe ronde aan</button>
+        </div></form>`
+    : `<div class="panel"><h3>Nieuwe ronde</h3><p style="margin:0">Er zijn nog geen vaste punten. Plak ze eerst hieronder vanuit Excel of voeg ze één voor één toe.</p></div>`;
+  return `<div style="display:grid;gap:20px">
+    ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(s), `data-go-site="${s}"`], [t.naam])}
+    <div><div class="eyebrow">${esc(siteNaam(s))}</div><h2>${esc(t.ronde)}</h2></div>
+    ${nieuw}
+    <div style="display:grid;gap:10px">
+      <h3>Rondes</h3>
+      ${!ready ? '<div class="empty">Rondes laden…</div>' : items ? `<div class="list">${items}</div>` : '<div class="empty">Nog geen rondes.</div>'}
+    </div>
+    ${viewVast(s, t, ps)}
+  </div>`;
+}
+
+function vastForm(p, t, pre) {
+  const e = p || { analyses: t.analyses.slice(0, 1).map(a => a.id) };
+  return `<div class="row">
+      <div class="field"><label class="lbl" for="${pre}-afdeling">Afdeling</label><input type="text" id="${pre}-afdeling" value="${esc(e.afdeling)}" placeholder="bv. STE"></div>
+      <div class="field" style="flex-basis:120px"><label class="lbl" for="${pre}-verdiep">Verdiep</label><input type="text" id="${pre}-verdiep" value="${esc(e.verdiep)}" placeholder="bv. Verdiep 1"></div>
+      <div class="field wide"><label class="lbl" for="${pre}-tappunt">Tappunt (omschrijving)</label><input type="text" id="${pre}-tappunt" value="${esc(e.tappunt)}" required placeholder="bv. Sint-Elisabeth 1e verdieping badkamer douche"></div>
+      <fieldset class="field wide loc-set"><legend class="lbl">Stalen op dit punt</legend>
+        <div class="checks">${t.analyses.map(a => `<label class="check"><input type="checkbox" id="${pre}-a-${a.id}" ${e.analyses.includes(a.id) ? "checked" : ""}> ${esc(a.naam)}</label>`).join("")}</div>
+      </fieldset>
+      ${p ? `<div class="field wide"><span class="lbl">Foto's van het tappunt (maximaal ${MAX_TAPPUNT_FOTOS})</span>
+        <div class="foto-veld">
+          ${fotoVoorbeelden(pre, { fotos: tappuntFotos(p) })}
+          <input type="file" accept="image/*" capture="environment" id="${pre}-camera" data-foto-input="${pre}" data-tappunt>
+          <label class="btn" for="${pre}-camera">Foto nemen</label>
+          <input type="file" accept="image/*" multiple id="${pre}-bestand" data-foto-input="${pre}" data-tappunt>
+          <label class="btn" for="${pre}-bestand">Foto kiezen</label>
+        </div></div>` : ""}
+    </div>`;
+}
+function leesVastForm(pre, t) {
+  return {
+    afdeling: $(`#${pre}-afdeling`).value.trim(),
+    verdiep: $(`#${pre}-verdiep`).value.trim(),
+    tappunt: $(`#${pre}-tappunt`).value.trim(),
+    analyses: t.analyses.filter(a => $(`#${pre}-a-${a.id}`).checked).map(a => a.id),
+  };
+}
+
+function viewVast(s, t, ps) {
+  if (state.plakken) return `<form class="panel" id="form-plak">
+      <h3>Vaste punten plakken uit Excel</h3>
+      <p class="muted" style="margin:0">Selecteer in Excel de rijen van de looproute, samen met de kolomtitels, kopieer ze en plak ze hieronder.
+        Herkende kolommen: ${t.analyses.map(a => esc(a.naam)).join(", ")} (met een x), Afdeling, Verdiep en Tappunt. Een kolom zonder titel naast Afdeling geldt als verdiep.</p>
+      <div class="field wide"><label class="lbl" for="plak-tekst">Geplakt uit Excel</label><textarea id="plak-tekst" style="min-height:140px;font-family:ui-monospace,monospace;font-size:.85rem" placeholder="Plak hier (Ctrl+V)"></textarea></div>
+      ${ps.length ? `<label class="check"><input type="checkbox" id="plak-vervang"> De ${ps.length} bestaande punten eerst verwijderen (hun foto's ook)</label>` : ""}
+      <div id="plak-voorbeeld"></div>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-plakken-stop>Annuleren</button><button class="btn primary" type="submit">Punten opslaan</button></div>
+    </form>`;
+  const rijen = ps.map((p, i) => {
+    if (state.edit === "vast:" + p.id) return `<form class="panel" data-vast-form="${p.id}"><h3>Punt ${i + 1} bewerken</h3>${vastForm(p, t, "e")}
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-cancel-edit>Annuleren</button><button class="btn primary" type="submit">Opslaan</button></div></form>`;
+    const conf = state.confirm === "vast:" + p.id;
+    return `<article class="vast">
+      <span class="nr">${i + 1}</span>
+      <div class="vast-tekst">
+        <div class="subject">${esc(p.tappunt || "(geen omschrijving)")}</div>
+        <div class="meta">${esc(plaats(p))}</div>
+        <div class="stats">${analysePills(t, p)}${p.foto ? "" : '<span class="pill">geen foto</span>'}</div>
+      </div>
+      ${fotoDuims(tappuntFotos(p), "Foto van het tappunt")}
+      ${state.fotoModus ? `<div class="plakvakken">${[1, 2].map(n => {
+        const heeft = n === 1 ? p.foto : p.foto2;
+        return `<div class="plakvak" tabindex="0" role="button" data-plak="${p.id}" data-nr="${n}">${fotoBezig.has(p.id + n) ? "Foto opslaan…" : `<strong>Foto ${n}${n === 2 ? " (indien nodig)" : ""}</strong><br>Klik hier en plak (Ctrl+V), of sleep er een foto in${heeft ? ". De huidige foto wordt vervangen." : ""}`}</div>`;
+      }).join("")}</div>` : ""}
+      <div class="actions vast-acties">${conf
+        ? `<span class="muted" style="align-self:center">Verwijderen?</span><button class="btn small danger" data-del-vast="${p.id}">Ja</button><button class="btn small" data-confirm="">Nee</button>`
+        : `<button class="btn small" data-schuif="${p.id}" data-richting="-1" ${i ? "" : "disabled"} aria-label="Hoger in de looproute">↑</button>
+           <button class="btn small" data-schuif="${p.id}" data-richting="1" ${i < ps.length - 1 ? "" : "disabled"} aria-label="Lager in de looproute">↓</button>
+           <button class="btn small" data-edit="vast:${p.id}">Bewerken</button>
+           <button class="btn small danger" data-confirm="vast:${p.id}">Verwijderen</button>`}</div>
+    </article>`;
+  }).join("");
+  const af = siteVan(s).afkortingen;
+  return `<div style="display:grid;gap:10px">
+    <div class="head"><h3>Vaste punten (looproute)</h3>
+      <div class="actions"><button class="btn small" data-lijst="${t.id}" ${ps.length ? "" : "disabled"} title="Lijst voor het labo: welke stalen en waar">Excel-lijst</button><button class="btn small" data-plakken>Plakken uit Excel</button><button class="btn small" data-nieuw-punt>Punt toevoegen</button>
+        <button class="btn small" data-foto-modus aria-pressed="${state.fotoModus}">${state.fotoModus ? "Klaar met foto's" : "Foto's toevoegen"}</button></div></div>
+    ${state.fotoModus ? `<p class="banner" style="margin:0">Kopieer in Excel een foto (klik erop, Ctrl+C), klik hier bij het juiste tappunt in het vak Foto 1 of Foto 2 en druk Ctrl+V. Slepen van een fotobestand kan ook. De foto wordt meteen opgeslagen.</p>` : ""}
+    ${af ? `<p class="muted" style="margin:0">${esc(af)}</p>` : ""}
+    ${state.nieuwPunt ? `<form class="panel" id="form-vast"><h3>Nieuw vast punt</h3>${vastForm(null, t, "n")}
+      <p class="muted" style="margin:0">Het punt komt onderaan de looproute. Een foto voeg je toe via Bewerken.</p>
+      <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-nieuw-stop>Annuleren</button><button class="btn primary" type="submit">Toevoegen</button></div></form>` : ""}
+    ${!ready ? '<div class="empty">Laden…</div>' : rijen ? `<div class="list">${rijen}</div>` : '<div class="empty">Nog geen vaste punten.</div>'}
+  </div>`;
+}
+
+function puntForm(p, t) {
+  return `<div class="row">
+      <fieldset class="field wide loc-set"><legend class="lbl">Genomen</legend>
+        <div class="checks">${p.analyses.map(a => `<label class="check"><input type="checkbox" id="e-g-${esc(a)}" ${p.genomen.includes(a) || !p.genomen.length ? "checked" : ""}> ${esc(analyseNaam(t, a))}</label>`).join("")}</div>
+      </fieldset>
+      <div class="field wide"><label class="lbl" for="e-opmerkingen">Opmerkingen</label><textarea id="e-opmerkingen">${esc(p.opmerkingen)}</textarea></div>
+      <div class="field wide"><span class="lbl">Foto's bij deze staalname</span>
+        <div class="foto-veld">
+          ${fotoVoorbeelden("e", p)}
+          <input type="file" accept="image/*" capture="environment" id="e-camera" data-foto-input="e">
+          <label class="btn" for="e-camera">Foto nemen</label>
+          <input type="file" accept="image/*" multiple id="e-bestand" data-foto-input="e">
+          <label class="btn" for="e-bestand">Foto's kiezen</label>
+        </div>
+      </div>
+    </div>
+    <div class="actions" style="justify-content:flex-end"><button type="button" class="btn" data-cancel-edit>Annuleren</button><button class="btn primary" type="submit">Opslaan</button></div>`;
+}
+
+function viewRonde() {
+  const r = rondes.find(x => x.id === state.ronde);
+  if (!r) return '<div class="empty">Ronde laden…</div>';
+  const t = typeVan(r.type);
+  const all = puntenVan(r.id);
+  const shown = state.filter === "alle" ? all : all.filter(p => state.filter === "genomen" ? klaar(p) : !klaar(p));
+  const list = shown.map(p => {
+    const i = all.indexOf(p), refs = fotosVanPunt(p);
+    const titel = `<span class="nr">${i + 1}</span>${refs.length ? `<button type="button" class="titel-knop" data-groot="${esc(refs.join("|"))}" title="Foto van het tappunt tonen">${esc(p.tappunt)}</button>` : esc(p.tappunt)}`;
+    if (state.edit === p.id) return `<form class="panel" data-edit-form="${p.id}"><h3>${titel}</h3>${plaats(p) ? `<div class="meta">${esc(plaats(p))}</div>` : ""}${puntForm(p, t)}</form>`;
+    const conf = state.confirm === "punt:" + p.id;
+    const nGenomen = p.analyses.filter(a => p.genomen.includes(a)).length;
+    return `<article class="staal ${klaar(p) ? "genomen" : "te-doen"}">
+      <div class="staal-top">
+        <span class="subject">${titel}</span>
+        <span class="pill ${klaar(p) ? "ok" : ""}">${klaar(p) ? "Genomen" : nGenomen ? `${nGenomen} van ${p.analyses.length}` : "Te doen"}</span>
+      </div>
+      <div class="punt-midden">
+        <div style="display:grid;gap:6px;min-width:0">
+          ${plaats(p) ? `<div class="meta">${esc(plaats(p))}</div>` : ""}
+          ${p.opmerkingen ? `<p>${esc(p.opmerkingen)}</p>` : ""}
+        </div>
+        ${fotoDuims(refs, "Foto van het tappunt")}
+      </div>
+      ${p.fotos.length ? `<div class="fotos">${p.fotos.map(f => fotoDuim(f, "Foto bij staalname")).join("")}</div>` : ""}
+      <div class="checks">${p.analyses.map(a => `<label class="check"><input type="checkbox" data-genomen="${p.id}" data-analyse="${esc(a)}" ${p.genomen.includes(a) ? "checked" : ""}> ${esc(analyseNaam(t, a))}</label>`).join("")}</div>
+      <div class="actions" style="justify-content:flex-end">${conf
+        ? `<span class="muted" style="align-self:center">Punt uit deze ronde verwijderen?</span><button class="btn small danger" data-del-punt="${p.id}">Ja, verwijderen</button><button class="btn small" data-confirm="">Nee</button>`
+        : `<button class="btn small" data-edit="${p.id}">Invullen</button><button class="btn small danger" data-confirm="punt:${p.id}">Verwijderen</button>`}</div>
+    </article>`;
+  }).join("");
+  const nKlaar = all.filter(klaar).length;
+  const filt = [["alle", `Alle (${all.length})`], ["te-doen", `Te doen (${all.length - nKlaar})`], ["genomen", `Genomen (${nKlaar})`]]
+    .map(([f, lbl]) => `<button class="btn small" aria-pressed="${state.filter === f}" data-filter="${f}">${lbl}</button>`).join("");
+  const confR = state.confirm === "ronde";
+  const head = state.editRonde
+    ? `<form class="panel" id="form-ronde-edit"><h3>Ronde bewerken</h3><div class="row">
+        <div class="field" style="flex:0 1 180px"><label class="lbl" for="re-datum">Datum</label><input type="date" id="re-datum" required value="${esc(r.datum)}"></div>
+        <div class="actions"><button type="button" class="btn" data-cancel-ronde>Annuleren</button><button class="btn primary" type="submit">Opslaan</button></div>
+      </div></form>`
+    : `<div class="head">
+        <div><div class="eyebrow">${esc(t.ronde)} · ${esc(siteNaam(r.site))}</div><h2>${fmtDate(r.datum)}</h2></div>
+        <div class="actions">${confR
+          ? `<span class="muted" style="align-self:center">Ronde met ${all.length} punten verwijderen?</span><button class="btn small danger" data-del-ronde>Ja, verwijderen</button><button class="btn small" data-confirm="">Nee</button>`
+          : `<button class="btn small" data-export>Excel-export</button><button class="btn small" data-edit-ronde>Bewerken</button><button class="btn small danger" data-confirm="ronde">Verwijderen</button>`}</div>
+      </div>`;
+  const af = siteVan(r.site).afkortingen;
+  return `<div style="display:grid;gap:20px">
+    ${crumbs(["Alle sites", "data-go-sites"], [siteNaam(r.site), `data-go-site="${esc(r.site)}"`], [t.naam, `data-go-type="${esc(r.type)}"`], [fmtDate(r.datum)])}
+    ${head}
+    <div class="stats">${voortgang(all)}</div>
+    <div style="display:grid;gap:10px">
+      <div class="head"><h3>Punten</h3><div class="filters">${filt}</div></div>
+      ${af ? `<p class="muted" style="margin:0">${esc(af)}</p>` : ""}
+      ${shown.length ? `<div class="list">${list}</div>` : `<div class="empty">${all.length ? (state.filter === "genomen" ? "Nog geen punten volledig genomen." : "Alle punten zijn genomen.") : "Deze ronde heeft geen punten."}</div>`}
+    </div>
+    <form class="panel" id="form-extra"><h3>Extra punt in deze ronde</h3>${vastForm(null, t, "x")}
+      <div class="actions" style="justify-content:flex-end"><button class="btn" type="submit">Toevoegen</button></div>
+    </form>
+  </div>`;
+}
+
+/* ---------- Plakken uit Excel ---------- */
+// Excel kopieert als tekst met tabs tussen de cellen; cellen met een regeleinde staan tussen aanhalingstekens.
+function leesTabel(tekst) {
+  tekst = tekst.replace(/\r\n?/g, "\n");
+  const scheiding = tekst.includes("\t") ? "\t" : tekst.includes(";") ? ";" : "\t";
+  const rijen = []; let rij = [], cel = "", q = false;
+  for (let i = 0; i < tekst.length; i++) {
+    const c = tekst[i];
+    if (q) { if (c === '"') { if (tekst[i + 1] === '"') { cel += '"'; i++; } else q = false; } else cel += c; }
+    else if (c === '"' && cel === "") q = true;
+    else if (c === scheiding) { rij.push(cel); cel = ""; }
+    else if (c === "\n") { rij.push(cel); rijen.push(rij); rij = []; cel = ""; }
+    else cel += c;
+  }
+  if (cel || rij.length) { rij.push(cel); rijen.push(rij); }
+  return rijen.map(r => r.map(c => c.trim())).filter(r => r.some(Boolean));
+}
+// Zet geplakte rijen om naar vaste punten aan de hand van de kolomtitels.
+function puntenUitPlak(tekst, t) {
+  const rijen = leesTabel(tekst);
+  if (!rijen.length) return { punten: [], fout: "" };
+  const kop = rijen[0].map(k => k.toLowerCase());
+  const zoek = re => kop.findIndex(k => re.test(k));
+  const kol = {
+    afdeling: zoek(/afdeling|gebouw|zone/),
+    verdiep: zoek(/verdiep|niveau/),
+    tappunt: zoek(/tappunt|omschrijving|locatie|punt|naam/),
+    analyses: t.analyses.map(a => [a.id, kop.findIndex(k => a.kop.test(k))]).filter(([, i]) => i >= 0),
+  };
+  if (kol.verdiep < 0 && kol.afdeling >= 0 && kop[kol.afdeling + 1] === "") kol.verdiep = kol.afdeling + 1;
+  if (kol.tappunt < 0) return { punten: [], fout: "Geen kolom Tappunt gevonden. Kopieer ook de rij met de kolomtitels." };
+  const cel = (r, i) => i >= 0 ? (r[i] || "") : "";
+  const punten = rijen.slice(1).map(r => ({
+    afdeling: cel(r, kol.afdeling), verdiep: verdiepTekst(cel(r, kol.verdiep)), tappunt: cel(r, kol.tappunt),
+    analyses: kol.analyses.length ? kol.analyses.filter(([, i]) => cel(r, i)).map(([a]) => a) : [t.analyses[0].id],
+  })).filter(p => p.tappunt);
+  return { punten, fout: "" };
+}
+function toonPlakVoorbeeld() {
+  const el = $("#plak-voorbeeld"); if (!el) return;
+  const t = typeVan(state.type), { punten: ps, fout } = puntenUitPlak($("#plak-tekst").value, t);
+  if (fout) { el.innerHTML = `<div class="banner">${esc(fout)}</div>`; return; }
+  el.innerHTML = ps.length ? `<div style="display:grid;gap:6px"><span class="lbl">Voorbeeld: ${ps.length} punten</span>
+    <div class="tabel-wrap"><table><thead><tr><th>Nr</th><th>Afdeling</th><th>Verdiep</th><th>Tappunt</th>${t.analyses.map(a => `<th>${esc(a.naam)}</th>`).join("")}</tr></thead>
+    <tbody>${ps.map((p, i) => `<tr><td>${i + 1}</td><td>${esc(p.afdeling)}</td><td>${esc(p.verdiep)}</td><td>${esc(p.tappunt)}</td>${t.analyses.map(a => `<td>${p.analyses.includes(a.id) ? "✓" : ""}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>` : "";
+}
+
+/* ---------- Foto's (Supabase Storage, bucket "staalnamen-fotos") ---------- */
+const fotoUrls = new Map();
+async function fotoUrl(pad) {
+  if (fotoUrls.has(pad)) return fotoUrls.get(pad);
+  const { data } = await sb.storage.from(BUCKET).createSignedUrl(pad, 60 * 60 * 12);
+  const url = data && data.signedUrl;
+  if (url) fotoUrls.set(pad, url);
+  return url;
+}
+function bewaarFoto(pad, blob) { return sb.storage.from(BUCKET).upload(pad, blob, { upsert: true, contentType: "image/jpeg" }); }
+async function wisFotos(paden) {
+  paden = (paden || []).filter(Boolean); if (!paden.length) return;
+  paden.forEach(p => fotoUrls.delete(p));
+  try { await sb.storage.from(BUCKET).remove(paden); } catch (e) { console.error(e); }
+}
+function toonFotos() {
+  document.querySelectorAll("img[data-foto]").forEach(async img => {
+    const url = await fotoUrl(img.dataset.foto);
+    if (url && img.isConnected) img.src = url;
+  });
+}
+// Foto verkleinen tot max. 1600 px, JPEG: kleiner bestand, sneller opladen.
+async function verklein(file) {
+  const bron = await createImageBitmap(file).catch(() => null);
+  if (!bron) return file;
+  const k = Math.min(1, 1600 / Math.max(bron.width, bron.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bron.width * k); c.height = Math.round(bron.height * k);
+  c.getContext("2d").drawImage(bron, 0, 0, c.width, c.height);
+  return new Promise(ok => c.toBlob(b => ok(b || file), "image/jpeg", 0.8));
+}
+// Gekozen maar nog niet opgeslagen foto's in het formulier dat open staat.
+const fotoNieuw = { e: [] };            // [{ blob, url }]
+const fotoWeg = { e: new Set() };       // bestaande paden die weg moeten
+function fotoVoorbeelden(pre, p) {
+  const bestaand = (p.fotos || []).filter(f => !fotoWeg[pre].has(f)).map(f =>
+    `<div class="foto-keuze"><img class="duim" data-foto="${esc(f)}" alt="Huidige foto"><button type="button" data-foto-weg="${pre}" data-pad="${esc(f)}" aria-label="Foto verwijderen">×</button></div>`);
+  const nieuw = fotoNieuw[pre].map((f, i) =>
+    `<div class="foto-keuze"><img class="duim" src="${f.url}" alt="Gekozen foto"><button type="button" data-foto-weg="${pre}" data-i="${i}" aria-label="Foto verwijderen">×</button></div>`);
+  return bestaand.concat(nieuw).join("");
+}
+function wisKeuze(pre) {
+  fotoNieuw[pre].forEach(f => URL.revokeObjectURL(f.url));
+  fotoNieuw[pre] = []; fotoWeg[pre] = new Set();
+}
+async function uploadNieuw(pre, map, id) {
+  const paden = [];
+  for (let i = 0; i < fotoNieuw[pre].length; i++) {
+    const pad = `${map}/${id}-${Date.now()}-${i}.jpg`;
+    const up = await bewaarFoto(pad, fotoNieuw[pre][i].blob).catch(err => ({ error: err }));
+    if (up.error) { console.error(up.error); await wisFotos(paden); return null; }
+    paden.push(pad);
+  }
+  return paden;
+}
+
+/* ---------- Excel-export ---------- */
+const EXCELJS_URL = "vendor/exceljs-4.4.0.min.js";
+function laadExcelJS() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  return new Promise((ok, nok) => {
+    const sc = document.createElement("script");
+    sc.src = EXCELJS_URL; sc.onload = () => ok(window.ExcelJS); sc.onerror = nok;
+    document.head.appendChild(sc);
+  });
+}
+// Kleine versie van de foto voor in Excel, zodat het bestand licht blijft.
+async function fotoVoorExcel(pad) {
+  const { data: blob } = await sb.storage.from(BUCKET).download(pad); if (!blob) return null;
+  const bron = await createImageBitmap(blob).catch(() => null); if (!bron) return null;
+  const k = Math.min(1, 160 / Math.max(bron.width, bron.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bron.width * k); c.height = Math.round(bron.height * k);
+  c.getContext("2d").drawImage(bron, 0, 0, c.width, c.height);
+  const b64 = c.toDataURL("image/jpeg", 0.8).split(",")[1];
+  return { base64: b64, width: c.width, height: c.height };
+}
+const MAX_FOTOS_EXCEL = 4;
+// Zet een foto in een cel (kolom k0 is 0-gebaseerd) en maakt de rij hoog genoeg.
+async function fotoInCel(wb, ws, rij, rijNr, k0, pad) {
+  const f = await fotoVoorExcel(pad).catch(() => null);
+  if (!f) { rij.getCell(k0 + 1).value = "(foto niet beschikbaar)"; return; }
+  const id = wb.addImage({ base64: f.base64, extension: "jpeg" });
+  ws.addImage(id, { tl: { col: k0 + 0.05, row: rijNr - 1 + 0.05 }, ext: { width: f.width, height: f.height }, editAs: "oneCell" });
+  rij.height = Math.max(rij.height || 15, f.height * 0.75 + 8);
+}
+async function exporteerRonde(rondeId) {
+  const r = rondes.find(x => x.id === rondeId); if (!r) return;
+  let ExcelJS;
+  try { ExcelJS = await laadExcelJS(); } catch { toast("Excel-export kon niet geladen worden. Controleer je internetverbinding."); return; }
+  const t = typeVan(r.type), lijst = puntenVan(r.id);
+  const nFoto = Math.min(MAX_FOTOS_EXCEL, Math.max(0, ...lijst.map(p => p.fotos.length)));
+  const kolommen = [["Nr", 5], ["Afdeling", 14], ["Verdiep", 11], ["Tappunt", 40], ...t.analyses.map(a => [a.naam, 14]), ["Opmerkingen", 36]];
+  const opmKol = kolommen.length;
+  const nTap = Math.max(0, ...lijst.map(p => fotosVanPunt(p).length));
+  for (let i = 0; i < nTap; i++) kolommen.push([nTap === 1 ? "Foto tappunt" : `Foto tappunt ${i + 1}`, 24]);
+  for (let i = 0; i < nFoto; i++) kolommen.push([nFoto === 1 ? "Foto staalname" : `Foto staalname ${i + 1}`, 24]);
+  const n = kolommen.length;
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Staalnamen"; wb.created = new Date();
+  const ws = wb.addWorksheet("Ronde", { pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
+  ws.columns = kolommen.map(([, w]) => ({ width: w }));
+  ws.mergeCells(1, 1, 1, n);
+  ws.getCell("A1").value = t.ronde;
+  ws.getCell("A1").font = { bold: true, size: 16 };
+  const telling = t.analyses.map(a => {
+    const nodig = lijst.filter(p => p.analyses.includes(a.id));
+    return `${a.naam}: ${nodig.filter(p => p.genomen.includes(a.id)).length} van ${nodig.length}`;
+  }).join(" · ");
+  const info = [["Site", siteNaam(r.site)], ["Datum", fmtDate(r.datum)], ["Stalen genomen", telling], ["Geëxporteerd op", new Date().toLocaleString("nl-BE")]];
+  info.forEach(([k, v], i) => {
+    const rij = ws.getRow(2 + i);
+    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true };
+    ws.mergeCells(2 + i, 1, 2 + i, 2); ws.mergeCells(2 + i, 3, 2 + i, n);
+    rij.getCell(3).value = v;
+  });
+  const KOP = 2 + info.length + 1;
+  const kop = ws.getRow(KOP);
+  kolommen.forEach(([titel], i) => {
+    const cel = kop.getCell(i + 1);
+    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1D2220" } };
+    cel.alignment = { vertical: "middle", wrapText: true };
+  });
+  kop.height = 30;
+  ws.views = [{ state: "frozen", ySplit: KOP }];
+  ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
+  const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
+
+  for (let i = 0; i < lijst.length; i++) {
+    const p = lijst[i], rijNr = KOP + 1 + i;
+    const rij = ws.getRow(rijNr);
+    const waarden = [i + 1, p.afdeling, p.verdiep, p.tappunt, ...t.analyses.map(a => !p.analyses.includes(a.id) ? "—" : p.genomen.includes(a.id) ? "Genomen" : "Niet genomen")];
+    waarden.push(p.fotos.length > nFoto ? [p.opmerkingen, `(+${p.fotos.length - nFoto} foto's in de app)`].filter(Boolean).join("\n") : p.opmerkingen);
+    for (let k = 0; k < nTap + nFoto; k++) waarden.push("");
+    rij.values = waarden;
+    rij.eachCell({ includeEmpty: true }, cel => { cel.alignment = { vertical: "top", wrapText: true }; cel.border = { top: rand, bottom: rand, left: rand, right: rand }; });
+    t.analyses.forEach((a, k) => {
+      if (!p.analyses.includes(a.id)) return;
+      const ja = p.genomen.includes(a.id), gc = rij.getCell(5 + k);
+      gc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: ja ? "FFE3F2EA" : "FFFBE6E3" } };
+      gc.font = { bold: true, color: { argb: ja ? "FF1D7A4C" : "FFB0261C" } };
+    });
+    rij.height = Math.max(30, Math.ceil(Math.max((p.opmerkingen || "").length / 40, (p.tappunt || "").length / 45)) * 15 + 6);
+    const tap = fotosVanPunt(p);
+    for (let k = 0; k < tap.length; k++) await fotoInCel(wb, ws, rij, rijNr, opmKol + k, tap[k]);
+    for (let k = 0; k < Math.min(nFoto, p.fotos.length); k++) await fotoInCel(wb, ws, rij, rijNr, opmKol + nTap + k, p.fotos[k]);
+  }
+  if (lijst.length) ws.autoFilter = { from: { row: KOP, column: 1 }, to: { row: KOP + lijst.length, column: opmKol } };
+  else ws.getCell(`A${KOP + 1}`).value = "Geen punten in deze ronde.";
+
+  await downloadExcel(wb, `${t.ronde} ${siteNaam(r.site)} ${r.datum}.xlsx`);
+}
+async function downloadExcel(wb, bestandsnaam) {
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const naam = bestandsnaam.replace(/[\\/:*?"<>|]/g, "-");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = naam;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  toast("Excel-bestand gedownload");
+}
+
+// Korte lijst van de vaste punten (welke stalen, waar) om door te sturen naar wie de staalnames inplant.
+async function exporteerLijst(site, type) {
+  let ExcelJS;
+  try { ExcelJS = await laadExcelJS(); } catch { toast("Excel-export kon niet geladen worden. Controleer je internetverbinding."); return; }
+  const t = typeVan(type), lijst = vastVan(site, type);
+  const staalKop = a => t.analyses.length === 1 ? t.naam : a.naam;
+  const kolommen = [["Nr", 5], ...t.analyses.map(a => [staalKop(a), 16]), ["Afdeling", 14], ["Tappunt", 55]];
+  const fotoKol = kolommen.length, nTap = Math.max(0, ...lijst.map(p => tappuntFotos(p).length));
+  for (let i = 0; i < nTap; i++) kolommen.push([nTap === 1 ? "Foto" : `Foto ${i + 1}`, 24]);
+  const n = kolommen.length, nA = t.analyses.length;
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Staalnamen"; wb.created = new Date();
+  const ws = wb.addWorksheet("Stalen", { pageSetup: { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
+  ws.columns = kolommen.map(([, w]) => ({ width: w }));
+  ws.mergeCells(1, 1, 1, n);
+  ws.getCell("A1").value = `${t.ronde} – ${siteNaam(site)}`;
+  ws.getCell("A1").font = { bold: true, size: 16 };
+  const aantallen = t.analyses.map(a => lijst.filter(p => p.analyses.includes(a.id)).length);
+  const info = [["Site", siteNaam(site)], ["Aantal tappunten", lijst.length],
+    ["Aantal stalen", [...t.analyses.map((a, k) => `${staalKop(a)}: ${aantallen[k]}`), ...(nA > 1 ? [`Totaal: ${aantallen.reduce((x, y) => x + y, 0)}`] : [])].join(" · ")]];
+  info.forEach(([k, v], i) => {
+    const rij = ws.getRow(2 + i);
+    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true };
+    ws.mergeCells(2 + i, 1, 2 + i, 1 + nA); ws.mergeCells(2 + i, 2 + nA, 2 + i, n);
+    rij.getCell(2 + nA).value = v; rij.getCell(2 + nA).alignment = { horizontal: "left" };
+  });
+  const KOP = 2 + info.length + 1;
+  const kop = ws.getRow(KOP);
+  kolommen.forEach(([titel], i) => {
+    const cel = kop.getCell(i + 1);
+    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1D2220" } };
+    cel.alignment = { vertical: "middle", horizontal: i && i <= nA ? "center" : "left", wrapText: true };
+  });
+  kop.height = 30;
+  ws.views = [{ state: "frozen", ySplit: KOP }];
+  ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
+  const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
+  for (let i = 0; i < lijst.length; i++) {
+    const p = lijst[i], rijNr = KOP + 1 + i, rij = ws.getRow(rijNr);
+    rij.values = [i + 1, ...t.analyses.map(a => p.analyses.includes(a.id) ? "x" : ""), p.afdeling, [p.tappunt, p.verdiep && !p.tappunt.toLowerCase().includes(p.verdiep.toLowerCase()) ? `(${p.verdiep})` : ""].filter(Boolean).join(" "), ...Array(nTap).fill("")];
+    rij.eachCell({ includeEmpty: true }, (cel, k) => {
+      cel.alignment = { vertical: "top", horizontal: k > 1 && k <= 1 + nA ? "center" : "left", wrapText: true };
+      cel.border = { top: rand, bottom: rand, left: rand, right: rand };
+      if (k > 1 && k <= 1 + nA && cel.value) cel.font = { bold: true };
+    });
+    const fotos = tappuntFotos(p);
+    for (let k = 0; k < fotos.length; k++) await fotoInCel(wb, ws, rij, rijNr, fotoKol + k, fotos[k]);
+  }
+  const tot = ws.getRow(KOP + 1 + lijst.length);
+  tot.values = ["Totaal", ...aantallen, "", ""];
+  tot.eachCell({ includeEmpty: true }, (cel, k) => { cel.font = { bold: true }; cel.alignment = { horizontal: k > 1 && k <= 1 + nA ? "center" : "left" }; cel.border = { top: { style: "medium" } }; });
+
+  await downloadExcel(wb, `Stalen ${t.naam} ${siteNaam(site)}.xlsx`);
+}
+
+/* ---------- Opslag (Supabase) ---------- */
+const vastRij = r => ({ id: r.id, site: r.site, type: r.type, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: verdiepTekst(r.verdiep),
+  tappunt: r.tappunt || "", analyses: r.analyses || [], foto: r.foto || null, foto2: r.foto2 || null });
+const rondeRij = r => ({ id: r.id, site: r.site, type: r.type, datum: r.datum, aangemaakt: r.aangemaakt });
+const puntRij = r => ({ id: r.id, rondeId: r.ronde_id, puntId: r.punt_id || null, volgorde: r.volgorde || 0, afdeling: r.afdeling || "", verdiep: verdiepTekst(r.verdiep),
+  tappunt: r.tappunt || "", analyses: r.analyses || [], genomen: r.genomen_analyses || [],
+  opmerkingen: r.opmerkingen || "", fotos: Array.isArray(r.fotos) ? r.fotos : [] });
+
+// Supabase geeft max. 1000 rijen per keer terug; haal alles op in stukken.
+async function selectAlles(tabel) {
+  const uit = [];
+  for (let van = 0; ; van += 1000) {
+    const { data, error } = await sb.from(tabel).select("*").order("id").range(van, van + 999);
+    if (error) return { error };
+    uit.push(...data);
+    if (data.length < 1000) return { data: uit, error: null };
+  }
+}
+
+async function laadAlles() {
+  const [v, r, p] = await Promise.all([selectAlles("staalpunten"), selectAlles("staalrondes"), selectAlles("staalronde_punten")]);
+  if (v.error || r.error || p.error) { banner("De gegevens konden niet geladen worden. Heb je toegang gekregen? Vraag het aan de beheerder."); return; }
+  banner("");
+  vast = v.data.map(vastRij); rondes = r.data.map(rondeRij); punten = p.data.map(puntRij);
+  ready = true;
+  renderSafe();
+}
+
+async function write(fn, okMsg) {
+  try {
+    const { error } = await fn();
+    if (error) throw error;
+    if (okMsg) toast(okMsg);
+    laadAlles();
+    return true;
+  } catch (e) {
+    console.error(e);
+    toast(e && (e.code === "42501" || /row-level security/i.test(e.message || "")) ? "Je hebt geen toegang om dit op te slaan." : "Opslaan mislukt. Controleer je verbinding en probeer opnieuw.");
+    return false;
+  }
+}
+
+// Volgorde opnieuw nummeren (0, 1, 2…) en enkel de punten opslaan die van plaats veranderen.
+async function bewaarVolgorde(lijst) {
+  const wijz = lijst.map((p, i) => [p, i]).filter(([p, i]) => p.volgorde !== i);
+  wijz.forEach(([p, i]) => p.volgorde = i);
+  render();
+  return write(async () => {
+    const res = await Promise.all(wijz.map(([p, i]) => sb.from("staalpunten").update({ volgorde: i }).eq("id", p.id)));
+    return res.find(x => x.error) || { error: null };
+  });
+}
+
+document.addEventListener("submit", async e => {
+  e.preventDefault();
+  const f = e.target;
+  const knop = f.querySelector("button[type=submit]");
+  const t = typeVan(state.type);
+  if (f.id === "form-login") {
+    const email = $("#l-mail").value.trim();
+    if (!email) return;
+    knop.disabled = true;
+    const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: location.origin + location.pathname, shouldCreateUser: true } });
+    knop.disabled = false;
+    if (error) toast("Versturen mislukt: " + error.message);
+    else f.innerHTML = `<h2>Kijk in je mailbox</h2><p style="margin:0">We stuurden een aanmeldlink naar <strong>${esc(email)}</strong>. Open die link op dit toestel.</p>`;
+  } else if (f.id === "form-plak") {
+    const { punten: ps, fout } = puntenUitPlak($("#plak-tekst").value, t);
+    if (fout || !ps.length) { $("#plak-tekst").focus(); toast(fout || "Plak eerst de punten uit Excel"); return; }
+    const oud = vastVan(state.site, state.type), vervang = $("#plak-vervang") && $("#plak-vervang").checked;
+    const start = vervang ? 0 : oud.length ? Math.max(...oud.map(p => p.volgorde)) + 1 : 0;
+    knop.disabled = true;
+    if (vervang && oud.length) {
+      const weg = await Promise.all(oud.map(p => sb.from("staalpunten").delete().eq("id", p.id)));
+      if (weg.some(x => x.error)) { knop.disabled = false; toast("De bestaande punten konden niet verwijderd worden."); laadAlles(); return; }
+      wisFotos(oud.flatMap(tappuntFotos));
+    }
+    const ok = await write(() => sb.from("staalpunten").insert(ps.map((p, i) => ({ id: crypto.randomUUID(), site: state.site, type: state.type, volgorde: start + i, ...p }))), `${ps.length} punten opgeslagen`);
+    knop.disabled = false;
+    if (ok) { state.plakken = false; render(); }
+  } else if (f.id === "form-vast") {
+    const d = leesVastForm("n", t);
+    if (!d.tappunt) { $("#n-tappunt").focus(); return; }
+    const oud = vastVan(state.site, state.type);
+    knop.disabled = true;
+    const ok = await write(() => sb.from("staalpunten").insert({ id: crypto.randomUUID(), site: state.site, type: state.type, volgorde: oud.length ? Math.max(...oud.map(p => p.volgorde)) + 1 : 0, ...d }), "Punt toegevoegd");
+    knop.disabled = false;
+    if (ok) { state.nieuwPunt = false; render(); }
+  } else if (f.dataset.vastForm) {
+    const id = f.dataset.vastForm, oud = vast.find(p => p.id === id); if (!oud) return;
+    const d = leesVastForm("e", t);
+    if (!d.tappunt) { $("#e-tappunt").focus(); return; }
+    knop.disabled = true;
+    const nieuw = await uploadNieuw("e", `${oud.site}/punten`, id);
+    if (!nieuw) { knop.disabled = false; toast("De foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
+    const fotos = tappuntFotos(oud).filter(f => !fotoWeg.e.has(f)).concat(nieuw);
+    d.foto = fotos[0] || null; d.foto2 = fotos[1] || null;
+    const ok = await write(() => sb.from("staalpunten").update(d).eq("id", id), "Opgeslagen");
+    knop.disabled = false;
+    if (!ok) { wisFotos(nieuw); return; }
+    // De oude foto blijft bewaard: oude rondes kunnen er nog naar verwijzen via dit punt.
+    wisKeuze("e"); state.edit = null; render();
+  } else if (f.id === "form-ronde") {
+    const datum = $("#r-datum").value, ps = vastVan(state.site, state.type);
+    if (!datum || !ps.length) return;
+    knop.disabled = true;
+    const id = crypto.randomUUID();
+    let ok = await write(() => sb.from("staalrondes").insert({ id, site: state.site, type: state.type, datum }));
+    if (ok) {
+      ok = await write(() => sb.from("staalronde_punten").insert(ps.map((p, i) => ({ id: crypto.randomUUID(), ronde_id: id, punt_id: p.id, volgorde: i,
+        afdeling: p.afdeling, verdiep: p.verdiep, tappunt: p.tappunt, analyses: p.analyses }))), "Ronde aangemaakt");
+      if (!ok) await sb.from("staalrondes").delete().eq("id", id);
+    }
+    knop.disabled = false;
+    if (ok) { await laadAlles(); go("ronde", { ronde: id, filter: "alle" }); }
+  } else if (f.dataset.editForm) {
+    const id = f.dataset.editForm, oud = punten.find(p => p.id === id); if (!oud) return;
+    const r = rondes.find(x => x.id === oud.rondeId) || {};
+    const d = {
+      genomen_analyses: oud.analyses.filter(a => $(`#e-g-${CSS.escape(a)}`) && $(`#e-g-${CSS.escape(a)}`).checked),
+      opmerkingen: $("#e-opmerkingen").value.trim(),
+    };
+    knop.disabled = true;
+    const nieuw = await uploadNieuw("e", `${r.site}/${r.id}`, id);
+    if (!nieuw) { knop.disabled = false; toast("Een foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
+    const weg = oud.fotos.filter(p => fotoWeg.e.has(p));
+    d.fotos = oud.fotos.filter(p => !fotoWeg.e.has(p)).concat(nieuw);
+    const ok = await write(() => sb.from("staalronde_punten").update(d).eq("id", id), "Opgeslagen");
+    knop.disabled = false;
+    if (!ok) { wisFotos(nieuw); return; }
+    wisFotos(weg); wisKeuze("e"); state.edit = null; render();
+  } else if (f.id === "form-extra") {
+    const r = rondes.find(x => x.id === state.ronde), rt = typeVan(r.type);
+    const d = leesVastForm("x", rt);
+    if (!d.tappunt) { $("#x-tappunt").focus(); return; }
+    if (!d.analyses.length) { toast("Kies minstens één staal"); return; }
+    const volgorde = Math.max(-1, ...puntenVan(r.id).map(p => p.volgorde)) + 1;
+    knop.disabled = true;
+    const ok = await write(() => sb.from("staalronde_punten").insert({ id: crypto.randomUUID(), ronde_id: r.id, volgorde, ...d }), "Punt toegevoegd");
+    knop.disabled = false;
+    if (ok) { f.reset(); }
+  } else if (f.id === "form-ronde-edit") {
+    const datum = $("#re-datum").value;
+    const ok = await write(() => sb.from("staalrondes").update({ datum }).eq("id", state.ronde), "Opgeslagen");
+    if (ok) { state.editRonde = false; render(); }
+  }
+});
+
+document.addEventListener("input", e => { if (e.target.id === "plak-tekst") toonPlakVoorbeeld(); });
+
+/* ---------- Foto's per tappunt plakken of slepen ---------- */
+const fotoBezig = new Set();
+async function zetTappuntFoto(id, nr, bestand) {
+  const p = vast.find(x => x.id === id), sleutel = id + nr; if (!p || fotoBezig.has(sleutel)) return;
+  if (!bestand || !/^image\//.test(bestand.type)) { toast("Dat is geen foto. Kopieer de foto zelf in Excel (klik erop, Ctrl+C)."); return; }
+  fotoBezig.add(sleutel); render();
+  const blob = await verklein(bestand);
+  const pad = `${p.site}/punten/${id}-${Date.now()}.jpg`;
+  const up = await bewaarFoto(pad, blob).catch(err => ({ error: err }));
+  if (up.error) { console.error(up.error); fotoBezig.delete(sleutel); render(); toast("De foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
+  // De oude foto blijft bewaard: oude rondes kunnen er nog naar verwijzen via dit punt.
+  // Foto 2 zonder foto 1 schuift op naar foto 1.
+  const kol = nr === 2 && p.foto ? "foto2" : "foto";
+  const ok = await write(() => sb.from("staalpunten").update({ [kol]: pad }).eq("id", id), "Foto opgeslagen");
+  if (ok) p[kol] = pad; else wisFotos([pad]);
+  fotoBezig.delete(sleutel); render();
+}
+document.addEventListener("paste", e => {
+  const vak = document.activeElement && document.activeElement.closest && document.activeElement.closest("[data-plak]");
+  if (!vak) return;
+  const item = [...(e.clipboardData ? e.clipboardData.items : [])].find(i => i.kind === "file" && /^image\//.test(i.type));
+  e.preventDefault();
+  if (!item) { toast("Er staat geen foto op het klembord. Kopieer de foto zelf in Excel (klik erop, Ctrl+C)."); return; }
+  zetTappuntFoto(vak.dataset.plak, +vak.dataset.nr, item.getAsFile());
+});
+document.addEventListener("dragover", e => { const vak = e.target.closest && e.target.closest("[data-plak]"); if (vak) { e.preventDefault(); vak.classList.add("over"); } });
+document.addEventListener("dragleave", e => { const vak = e.target.closest && e.target.closest("[data-plak]"); if (vak) vak.classList.remove("over"); });
+document.addEventListener("drop", e => {
+  const vak = e.target.closest && e.target.closest("[data-plak]");
+  if (!vak) return;
+  e.preventDefault(); vak.classList.remove("over");
+  const f = [...(e.dataTransfer ? e.dataTransfer.files : [])].find(f => /^image\//.test(f.type));
+  if (!f) { toast("Sleep een fotobestand, of kopieer de foto in Excel en plak ze met Ctrl+V."); return; }
+  zetTappuntFoto(vak.dataset.plak, +vak.dataset.nr, f);
+});
+
+document.addEventListener("change", async e => {
+  const t = e.target;
+  if (t.dataset.genomen) {
+    const p = punten.find(x => x.id === t.dataset.genomen); if (!p) return;
+    const genomen = t.checked ? [...new Set([...p.genomen, t.dataset.analyse])] : p.genomen.filter(a => a !== t.dataset.analyse);
+    const ok = await write(() => sb.from("staalronde_punten").update({ genomen_analyses: genomen }).eq("id", p.id));
+    if (!ok) t.checked = !t.checked;
+    return;
+  }
+  if (!t.dataset.fotoInput) return;
+  const pre = t.dataset.fotoInput, files = [...(t.files || [])];
+  if (!files.length) return;
+  let ruimte = files.length;
+  if ("tappunt" in t.dataset) {
+    const oud = vast.find(p => "vast:" + p.id === state.edit);
+    ruimte = MAX_TAPPUNT_FOTOS - tappuntFotos(oud).filter(f => !fotoWeg[pre].has(f)).length - fotoNieuw[pre].length;
+    if (ruimte < files.length) toast(`Maximaal ${MAX_TAPPUNT_FOTOS} foto's per tappunt. Verwijder eerst een foto met ×.`);
+  }
+  for (const file of files.slice(0, Math.max(0, ruimte))) { const blob = await verklein(file); fotoNieuw[pre].push({ blob, url: URL.createObjectURL(blob) }); }
+  t.value = "";
+  render();
+});
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const d = b.dataset;
+  if (b.id === "logout") { await sb.auth.signOut(); return; }
+  if (d.lijst) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerLijst(state.site, d.lijst); } finally { b.disabled = false; b.textContent = t; } return; }
+  if ("export" in d) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerRonde(state.ronde); } finally { b.disabled = false; b.textContent = t; } return; }
+  if (d.fotoWeg) {
+    const pre = d.fotoWeg;
+    if (d.pad) fotoWeg[pre].add(d.pad);
+    else { const [f] = fotoNieuw[pre].splice(+d.i, 1); if (f) URL.revokeObjectURL(f.url); }
+    render(); return;
+  }
+  if (d.groot) {
+    const urls = (await Promise.all(d.groot.split("|").map(fotoUrl))).filter(Boolean); if (!urls.length) return;
+    const ov = document.createElement("div"); ov.className = "groot" + (urls.length > 1 ? " twee" : "");
+    urls.forEach(url => { const img = document.createElement("img"); img.alt = "Foto"; img.src = url; ov.appendChild(img); });
+    ov.addEventListener("click", () => ov.remove()); document.body.appendChild(ov);
+    return;
+  }
+  if (d.schuif) {
+    const p = vast.find(x => x.id === d.schuif); if (!p) return;
+    const lijst = vastVan(p.site, p.type), i = lijst.indexOf(p), j = i + +d.richting;
+    if (j < 0 || j >= lijst.length) return;
+    [lijst[i], lijst[j]] = [lijst[j], lijst[i]];
+    await bewaarVolgorde(lijst);
+    return;
+  }
+  if ("goSites" in d) go("sites");
+  else if (d.goSite) go("site", { site: d.goSite });
+  else if (d.goType) go("type", { type: d.goType });
+  else if (d.goRonde) go("ronde", { ronde: d.goRonde, filter: "alle" });
+  else if (d.filter) { state.filter = d.filter; render(); }
+  else if ("confirm" in d) { state.confirm = d.confirm || null; render(); }
+  else if (d.edit) { wisKeuze("e"); state.edit = d.edit; state.confirm = null; render(); }
+  else if ("cancelEdit" in d) { wisKeuze("e"); state.edit = null; render(); }
+  else if ("editRonde" in d) { state.editRonde = true; state.confirm = null; render(); }
+  else if ("cancelRonde" in d) { state.editRonde = false; render(); }
+  else if ("plakken" in d) { state.plakken = true; state.nieuwPunt = false; render(); $("#plak-tekst").focus(); }
+  else if ("plakkenStop" in d) { state.plakken = false; render(); }
+  else if ("nieuwPunt" in d) { state.nieuwPunt = true; render(); $("#n-afdeling").focus(); }
+  else if ("fotoModus" in d) { state.fotoModus = !state.fotoModus; state.plakken = false; state.nieuwPunt = false; render(); }
+  else if ("nieuwStop" in d) { state.nieuwPunt = false; render(); }
+  else if (d.delVast) {
+    // De foto blijft bewaard: oude rondes kunnen er nog naar verwijzen.
+    if (await write(() => sb.from("staalpunten").delete().eq("id", d.delVast), "Punt verwijderd")) { state.confirm = null; render(); }
+  }
+  else if (d.delPunt) {
+    const fotos = (punten.find(p => p.id === d.delPunt) || {}).fotos;
+    if (await write(() => sb.from("staalronde_punten").delete().eq("id", d.delPunt), "Punt verwijderd")) { wisFotos(fotos); state.confirm = null; render(); }
+  }
+  else if ("delRonde" in d) {
+    const r = rondes.find(x => x.id === state.ronde);
+    // punten verdwijnen mee (on delete cascade)
+    const fotos = puntenVan(r.id).flatMap(p => p.fotos);
+    const ok = await write(() => sb.from("staalrondes").delete().eq("id", r.id), "Ronde verwijderd");
+    if (ok) { wisFotos(fotos); go("type", { site: r.site, type: r.type }); }
+  }
+});
+
+/* ---------- Opstart ---------- */
+let kanaal = null;
+function zetSessie(s) {
+  const was = !!sessie;
+  sessie = s;
+  $("#who").hidden = !s;
+  $("#who-mail").textContent = s ? s.user.email : "";
+  if (s && !was) {
+    laadAlles();
+    kanaal = sb.channel("staalnamen-wijzigingen");
+    ["staalpunten", "staalrondes", "staalronde_punten"].forEach(table =>
+      kanaal.on("postgres_changes", { event: "*", schema: "public", table }, () => laadAlles()));
+    kanaal.subscribe();
+  }
+  if (!s) { vast = []; rondes = []; punten = []; ready = false; if (kanaal) { sb.removeChannel(kanaal); kanaal = null; } }
+  render();
+}
+
+render();
+(async () => {
+  const cfg = window.STAALNAMEN_CONFIG || {};
+  if (!window.supabase || !cfg.supabaseUrl || !cfg.supabaseAnonKey) { banner("De app kon niet starten: de koppeling met de database ontbreekt (config.js)."); return; }
+  sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+  const { data } = await sb.auth.getSession();
+  zetSessie(data.session);
+  sb.auth.onAuthStateChange((_ev, s) => { if (!!s !== !!sessie) zetSessie(s); else sessie = s; });
+  // Bij terugkeer naar de app (gsm) gegevens verversen.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && sessie) laadAlles(); });
+})();
+
+// Niet opnieuw tekenen terwijl iemand een formulier invult; dat zou getypte tekst wissen.
+function renderSafe() {
+  const a = document.activeElement;
+  const typing = a && a.matches && a.matches("input[type=text], textarea, select, input[type=date]") && a.value;
+  if (typing) { clearTimeout(renderSafe.t); renderSafe.t = setTimeout(renderSafe, 1500); return; }
+  render();
+}
