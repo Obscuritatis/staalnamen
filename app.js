@@ -469,9 +469,7 @@ async function exporteerRonde(rondeId) {
   wb.creator = "Staalnamen"; wb.created = new Date();
   const ws = wb.addWorksheet("Ronde", { pageSetup: { orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
   ws.columns = kolommen.map(([, w]) => ({ width: w }));
-  ws.mergeCells(1, 1, 1, n);
-  ws.getCell("A1").value = t.ronde;
-  ws.getCell("A1").font = { bold: true, size: 16 };
+  xlTitel(ws, `${t.ronde} – ${siteNaam(r.site)}`, n);
   const telling = t.analyses.map(a => {
     const nodig = lijst.filter(p => p.analyses.includes(a.id));
     return `${a.naam}: ${nodig.filter(p => p.genomen.includes(a.id)).length} van ${nodig.length}`;
@@ -479,36 +477,36 @@ async function exporteerRonde(rondeId) {
   const info = [["Site", siteNaam(r.site)], ["Datum", fmtDate(r.datum)], ["Stalen genomen", telling], ["Geëxporteerd op", new Date().toLocaleString("nl-BE")]];
   info.forEach(([k, v], i) => {
     const rij = ws.getRow(2 + i);
-    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true };
+    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true, color: { argb: XL.grijs } };
     ws.mergeCells(2 + i, 1, 2 + i, 2); ws.mergeCells(2 + i, 3, 2 + i, n);
     rij.getCell(3).value = v;
   });
   const KOP = 2 + info.length + 1;
   const kop = ws.getRow(KOP);
-  kolommen.forEach(([titel], i) => {
-    const cel = kop.getCell(i + 1);
-    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1D2220" } };
-    cel.alignment = { vertical: "middle", wrapText: true };
-  });
-  kop.height = 30;
+  xlKop(kop, kolommen, i => i >= 4 && i < 4 + t.analyses.length ? "center" : "left");
   ws.views = [{ state: "frozen", ySplit: KOP }];
   ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
-  const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
+  const rand = { style: "thin", color: { argb: XL.rand } };
 
   for (let i = 0; i < lijst.length; i++) {
     const p = lijst[i], rijNr = KOP + 1 + i;
     const rij = ws.getRow(rijNr);
-    const waarden = [i + 1, p.afdeling, p.verdiep, p.tappunt, ...t.analyses.map(a => !p.analyses.includes(a.id) ? "—" : p.genomen.includes(a.id) ? "Genomen" : "Niet genomen")];
+    const waarden = [i + 1, p.afdeling, p.verdiep, p.tappunt, ...t.analyses.map(a => !p.analyses.includes(a.id) ? "–" : p.genomen.includes(a.id) ? "Genomen" : "Niet genomen")];
     waarden.push(p.fotos.length > nFoto ? [p.opmerkingen, `(+${p.fotos.length - nFoto} foto's in de app)`].filter(Boolean).join("\n") : p.opmerkingen);
     for (let k = 0; k < nTap + nFoto; k++) waarden.push("");
     rij.values = waarden;
-    rij.eachCell({ includeEmpty: true }, cel => { cel.alignment = { vertical: "top", wrapText: true }; cel.border = { top: rand, bottom: rand, left: rand, right: rand }; });
+    rij.eachCell({ includeEmpty: true }, (cel, k) => {
+      cel.alignment = { vertical: "top", horizontal: k >= 5 && k < 5 + t.analyses.length ? "center" : "left", wrapText: true };
+      cel.border = { top: rand, bottom: rand, left: rand, right: rand };
+      if (i % 2) cel.fill = xlVul(XL.zebra);
+    });
+    rij.getCell(1).font = { bold: true, color: { argb: XL.accent } };
     t.analyses.forEach((a, k) => {
       if (!p.analyses.includes(a.id)) return;
       const ja = p.genomen.includes(a.id), gc = rij.getCell(5 + k);
-      gc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: ja ? "FFE3F2EA" : "FFFBE6E3" } };
-      gc.font = { bold: true, color: { argb: ja ? "FF1D7A4C" : "FFB0261C" } };
+      gc.value = ja ? "✓ Genomen" : "Niet genomen";
+      gc.fill = xlVul(ja ? XL.okBg : XL.openBg);
+      gc.font = { bold: true, color: { argb: ja ? XL.ok : XL.open } };
     });
     rij.height = Math.max(30, Math.ceil(Math.max((p.opmerkingen || "").length / 40, (p.tappunt || "").length / 45)) * 15 + 6);
     const tap = fotosVanPunt(p);
@@ -519,6 +517,27 @@ async function exporteerRonde(rondeId) {
   else ws.getCell(`A${KOP + 1}`).value = "Geen punten in deze ronde.";
 
   await downloadExcel(wb, `${t.ronde} ${siteNaam(r.site)} ${r.datum}.xlsx`);
+}
+// Huisstijl van de Excel-bestanden: dezelfde warme kleuren als de app.
+const XL = { accent: "FF137A77", accentLicht: "FFE1F0EE", zebra: "FFFBF7F1", rand: "FFE7DDD0", grijs: "FF776B5F", ok: "FF3D7A34", okBg: "FFE5F0DC", open: "FFB4492F", openBg: "FFF8E4DB" };
+const xlVul = argb => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
+function xlTitel(ws, tekst, n) {
+  ws.properties.tabColor = { argb: XL.accent };
+  ws.mergeCells(1, 1, 1, n);
+  const c = ws.getCell("A1");
+  c.value = tekst; c.font = { bold: true, size: 18, color: { argb: XL.accent } };
+  c.alignment = { vertical: "middle" };
+  ws.getRow(1).height = 32;
+}
+function xlKop(rij, kolommen, uitlijning) {
+  kolommen.forEach(([titel], i) => {
+    const cel = rij.getCell(i + 1);
+    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cel.fill = xlVul(XL.accent);
+    cel.alignment = { vertical: "middle", horizontal: uitlijning(i), wrapText: true };
+    cel.border = { bottom: { style: "thin", color: { argb: XL.accent } } };
+  });
+  rij.height = 30;
 }
 async function downloadExcel(wb, bestandsnaam) {
   const buf = await wb.xlsx.writeBuffer();
@@ -546,44 +565,38 @@ async function exporteerLijst(site, type) {
   wb.creator = "Staalnamen"; wb.created = new Date();
   const ws = wb.addWorksheet("Stalen", { pageSetup: { orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 } });
   ws.columns = kolommen.map(([, w]) => ({ width: w }));
-  ws.mergeCells(1, 1, 1, n);
-  ws.getCell("A1").value = `${t.ronde} – ${siteNaam(site)}`;
-  ws.getCell("A1").font = { bold: true, size: 16 };
+  xlTitel(ws, `${t.ronde} – ${siteNaam(site)}`, n);
   const aantallen = t.analyses.map(a => lijst.filter(p => p.analyses.includes(a.id)).length);
   const info = [["Site", siteNaam(site)], ["Aantal tappunten", lijst.length],
     ["Aantal stalen", [...t.analyses.map((a, k) => `${staalKop(a)}: ${aantallen[k]}`), ...(nA > 1 ? [`Totaal: ${aantallen.reduce((x, y) => x + y, 0)}`] : [])].join(" · ")]];
   info.forEach(([k, v], i) => {
     const rij = ws.getRow(2 + i);
-    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true };
+    rij.getCell(1).value = k; rij.getCell(1).font = { bold: true, color: { argb: XL.grijs } };
     ws.mergeCells(2 + i, 1, 2 + i, 1 + nA); ws.mergeCells(2 + i, 2 + nA, 2 + i, n);
     rij.getCell(2 + nA).value = v; rij.getCell(2 + nA).alignment = { horizontal: "left" };
   });
   const KOP = 2 + info.length + 1;
   const kop = ws.getRow(KOP);
-  kolommen.forEach(([titel], i) => {
-    const cel = kop.getCell(i + 1);
-    cel.value = titel; cel.font = { bold: true, color: { argb: "FFFFFFFF" } };
-    cel.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF1D2220" } };
-    cel.alignment = { vertical: "middle", horizontal: i && i <= nA ? "center" : "left", wrapText: true };
-  });
-  kop.height = 30;
+  xlKop(kop, kolommen, i => i && i <= nA ? "center" : "left");
   ws.views = [{ state: "frozen", ySplit: KOP }];
   ws.pageSetup.printTitlesRow = `${KOP}:${KOP}`;
-  const rand = { style: "thin", color: { argb: "FFDDE1DE" } };
+  const rand = { style: "thin", color: { argb: XL.rand } };
   for (let i = 0; i < lijst.length; i++) {
     const p = lijst[i], rijNr = KOP + 1 + i, rij = ws.getRow(rijNr);
     rij.values = [i + 1, ...t.analyses.map(a => p.analyses.includes(a.id) ? "x" : ""), p.afdeling, [p.tappunt, p.verdiep && !p.tappunt.toLowerCase().includes(p.verdiep.toLowerCase()) ? `(${p.verdiep})` : ""].filter(Boolean).join(" "), ...Array(nTap).fill("")];
     rij.eachCell({ includeEmpty: true }, (cel, k) => {
       cel.alignment = { vertical: "top", horizontal: k > 1 && k <= 1 + nA ? "center" : "left", wrapText: true };
       cel.border = { top: rand, bottom: rand, left: rand, right: rand };
-      if (k > 1 && k <= 1 + nA && cel.value) cel.font = { bold: true };
+      if (i % 2) cel.fill = xlVul(XL.zebra);
+      if (k > 1 && k <= 1 + nA && cel.value) { cel.value = "✓"; cel.font = { bold: true, size: 13, color: { argb: XL.accent } }; }
     });
+    rij.getCell(1).font = { bold: true, color: { argb: XL.accent } };
     const fotos = tappuntFotos(p);
     for (let k = 0; k < fotos.length; k++) await fotoInCel(wb, ws, rij, rijNr, fotoKol + k, fotos[k]);
   }
   const tot = ws.getRow(KOP + 1 + lijst.length);
-  tot.values = ["Totaal", ...aantallen, "", ""];
-  tot.eachCell({ includeEmpty: true }, (cel, k) => { cel.font = { bold: true }; cel.alignment = { horizontal: k > 1 && k <= 1 + nA ? "center" : "left" }; cel.border = { top: { style: "medium" } }; });
+  tot.values = ["Totaal", ...aantallen, ...Array(n - 1 - nA).fill("")];
+  tot.eachCell({ includeEmpty: true }, (cel, k) => { cel.font = { bold: true, color: { argb: XL.accent } }; cel.fill = xlVul(XL.accentLicht); cel.alignment = { horizontal: k > 1 && k <= 1 + nA ? "center" : "left" }; cel.border = { top: { style: "medium", color: { argb: XL.accent } } }; });
 
   await downloadExcel(wb, `Stalen ${t.naam} ${siteNaam(site)}.xlsx`);
 }

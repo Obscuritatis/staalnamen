@@ -1,2 +1,2 @@
-Lettertypes Barlow Condensed en IBM Plex Sans (SIL Open Font License 1.1), via @fontsource.
-Ze staan hier zodat de app geen verbinding met Google Fonts maakt.
+Lettertype Nunito (SIL Open Font License 1.1, zie LICENSE-nunito.txt), via @fontsource/nunito 5.3.0.
+Het staat hier zodat de app geen verbinding met Google Fonts maakt.
