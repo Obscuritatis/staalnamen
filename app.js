@@ -370,10 +370,14 @@ function toonPlakVoorbeeld() {
 const fotoUrls = new Map();
 async function fotoUrl(pad) {
   if (fotoUrls.has(pad)) return fotoUrls.get(pad);
-  const { data } = await sb.storage.from(BUCKET).createSignedUrl(pad, 60 * 60 * 12);
+  // Een foto die nog in de wachtrij staat, komt van dit toestel.
+  const lokaal = wachtrij.find(it => it.actie === "foto" && it.pad === pad);
+  if (lokaal) { const url = URL.createObjectURL(lokaal.blob); fotoUrls.set(pad, url); return url; }
+  const { data } = await sb.storage.from(BUCKET).createSignedUrl(pad, 60 * 60 * 12).catch(() => ({}));
   const url = data && data.signedUrl;
   if (url) fotoUrls.set(pad, url);
-  return url;
+  // Zonder verbinding: de service worker geeft de foto uit zijn bewaarde kopie, als ze al eens getoond werd.
+  return url || encodeURI(`${window.STAALNAMEN_CONFIG.supabaseUrl}/storage/v1/object/sign/${BUCKET}/${pad}?offline=1`);
 }
 function bewaarFoto(pad, blob) { return sb.storage.from(BUCKET).upload(pad, blob, { upsert: true, contentType: "image/jpeg" }); }
 async function wisFotos(paden) {
@@ -622,11 +626,125 @@ async function selectAlles(tabel) {
 
 async function laadAlles() {
   const [v, r, p] = await Promise.all([selectAlles("staalpunten"), selectAlles("staalrondes"), selectAlles("staalronde_punten")]);
-  if (v.error || r.error || p.error) { banner("De gegevens konden niet geladen worden. Heb je toegang gekregen? Vraag het aan de beheerder."); return; }
-  banner("");
-  vast = v.data.map(vastRij); rondes = r.data.map(rondeRij); punten = p.data.map(puntRij);
-  ready = true;
+  const fout = v.error || r.error || p.error;
+  if (fout) {
+    // Geen verbinding: verder werken met de gegevens die op dit toestel bewaard zijn.
+    if (netwerkFout(fout)) { geenVerbinding = true; zetSync(); return; }
+    banner("De gegevens konden niet geladen worden. Heb je toegang gekregen? Vraag het aan de beheerder."); return;
+  }
+  banner(""); geenVerbinding = false;
+  raw.staalpunten = v.data; raw.staalrondes = r.data; raw.staalronde_punten = p.data;
+  try { localStorage.setItem(CACHE_SLEUTEL, JSON.stringify({ gebruiker: sessie && sessie.user && sessie.user.email, ...raw })); } catch (e) { console.error(e); }
+  herbereken(); ready = true; zetSync();
   renderSafe();
+}
+
+/* ---------- Offline werken ----------
+   Alles wat je in een ronde doet (aanvinken, invullen, foto's, extra punten, een nieuwe ronde) gaat eerst
+   naar een wachtrij op dit toestel (IndexedDB, met de foto's erbij) en wordt verstuurd zodra er verbinding is.
+   Zo kan een ronde ook verder in een kelder zonder bereik. Het beheer van de vaste punten vraagt wel verbinding. */
+const raw = { staalpunten: [], staalrondes: [], staalronde_punten: [] };   // zoals laatst geladen uit Supabase
+const CACHE_SLEUTEL = "staalnamen-gegevens";
+let wachtrij = [];          // [{k, actie: upsert|update|delete|foto|wis, tabel, rijen|id|data|pad|blob|paden}]
+let versturen = null, geenVerbinding = false, laatsteFout = null, laatsteK = 0;
+
+const netwerkFout = e => !navigator.onLine || !e || e.status === 0 || /fetch|network|load failed|timeout|abort/i.test(String(e.message || e));
+// Fouten die bij een nieuwe poging niet weggaan (geen toegang, ongeldige gegevens): die wijziging valt weg.
+const blijvendeFout = e => e && !netwerkFout(e) && /^(42501|22|23)/.test(String(e.code || ""));
+
+function idb(modus, fn) {
+  return new Promise((ok, nok) => {
+    const open = indexedDB.open("staalnamen", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("wachtrij", { keyPath: "k" });
+    open.onerror = () => nok(open.error);
+    open.onsuccess = () => {
+      const db = open.result, tx = db.transaction("wachtrij", modus), req = fn(tx.objectStore("wachtrij"));
+      tx.oncomplete = () => { db.close(); ok(req && req.result); };
+      tx.onerror = () => { db.close(); nok(tx.error); };
+    };
+  });
+}
+
+// Gegevens zoals laatst geladen + wat nog in de wachtrij staat.
+function herbereken() {
+  const d = { staalpunten: raw.staalpunten.slice(), staalrondes: raw.staalrondes.slice(), staalronde_punten: raw.staalronde_punten.slice() };
+  for (const it of wachtrij) {
+    const t = d[it.tabel]; if (!t) continue;
+    if (it.actie === "upsert") it.rijen.forEach(rij => { if (!t.some(x => x.id === rij.id)) t.push(rij); });
+    else if (it.actie === "update") { const i = t.findIndex(x => x.id === it.id); if (i >= 0) t[i] = { ...t[i], ...it.data }; }
+    else if (it.actie === "delete") {
+      d[it.tabel] = t.filter(x => x.id !== it.id);
+      if (it.tabel === "staalrondes") d.staalronde_punten = d.staalronde_punten.filter(p => p.ronde_id !== it.id);
+    }
+  }
+  vast = d.staalpunten.map(vastRij); rondes = d.staalrondes.map(rondeRij); punten = d.staalronde_punten.map(puntRij);
+}
+
+async function wacht(items, okMsg) {
+  items = items.map(it => ({ ...it, k: laatsteK = Math.max(Date.now(), laatsteK + 1) }));
+  try { await idb("readwrite", st => { items.forEach(it => st.put(it)); }); }
+  catch (e) { console.error(e); }   // geen IndexedDB (bv. privévenster): de wachtrij staat enkel in het geheugen
+  wachtrij.push(...items);
+  herbereken(); render();
+  if (okMsg) toast(navigator.onLine && !geenVerbinding ? okMsg : "Bewaard op dit toestel; wordt verstuurd zodra er verbinding is");
+  verstuur();
+}
+
+function voerUit(it) {
+  if (it.actie === "foto") return bewaarFoto(it.pad, it.blob);
+  if (it.actie === "wis") return sb.storage.from(BUCKET).remove(it.paden);
+  const q = sb.from(it.tabel);
+  if (it.actie === "upsert") return q.upsert(it.rijen, { ignoreDuplicates: true });   // nog eens versturen kan geen kwaad
+  if (it.actie === "update") return q.update(it.data).eq("id", it.id);
+  if (it.actie === "delete") return q.delete().eq("id", it.id);
+  return { error: null };
+}
+
+// Verstuurt de wachtrij in volgorde. Lukt het niet door de verbinding, dan blijft alles staan voor later.
+function verstuur() {
+  if (versturen || !sb || !sessie || !wachtrij.length) { zetSync(); return versturen; }
+  versturen = (async () => {
+    zetSync();
+    let fout = null;
+    while (wachtrij.length) {
+      const it = wachtrij[0];
+      let res;
+      try { res = await voerUit(it); } catch (e) { res = { error: e }; }
+      if (res && res.error) {
+        console.error(res.error);
+        if (!blijvendeFout(res.error)) { fout = res.error; break; }
+        toast(res.error.code === "42501" ? "Je hebt geen toegang om dit op te slaan." : "Een wijziging kon niet opgeslagen worden.");
+      }
+      wachtrij.shift();
+      await idb("readwrite", st => { st.delete(it.k); }).catch(() => {});
+    }
+    versturen = null; laatsteFout = fout;
+    if (fout && netwerkFout(fout)) geenVerbinding = true;
+    zetSync();
+    if (!fout) await laadAlles();
+  })();
+  return versturen;
+}
+
+function zetSync() {
+  const el = $("#sync"); if (!el) return;
+  const n = wachtrij.length, offline = !navigator.onLine || geenVerbinding;
+  el.hidden = !sessie || (!n && !offline);
+  el.classList.toggle("wacht", n > 0);
+  const wat = n ? ` · ${n} ${n === 1 ? "wijziging wacht" : "wijzigingen wachten"}` : "";
+  el.textContent = offline ? `Offline${wat || " · je kan verder werken"}` : versturen ? `Versturen${wat}` : `Nog niet verstuurd${wat}`;
+  el.title = laatsteFout && !offline ? String(laatsteFout.message || laatsteFout) : "";
+}
+
+// Bij het opstarten: de gegevens en wachtrij van de vorige keer, zodat de app ook zonder verbinding meteen werkt.
+async function laadBewaard(s) {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_SLEUTEL) || "null");
+    if (c && c.gebruiker === (s.user && s.user.email)) { raw.staalpunten = c.staalpunten || []; raw.staalrondes = c.staalrondes || []; raw.staalronde_punten = c.staalronde_punten || []; ready = true; }
+  } catch (e) { console.error(e); }
+  try { wachtrij = ((await idb("readonly", st => st.getAll())) || []).sort((a, b) => a.k - b.k); } catch (e) { console.error(e); }
+  laatsteK = Math.max(laatsteK, ...wachtrij.map(it => it.k));
+  herbereken(); zetSync(); render();
 }
 
 async function write(fn, okMsg) {
@@ -708,14 +826,12 @@ document.addEventListener("submit", async e => {
     if (!datum || !ps.length) return;
     knop.disabled = true;
     const id = crypto.randomUUID();
-    let ok = await write(() => sb.from("staalrondes").insert({ id, site: state.site, type: state.type, datum }));
-    if (ok) {
-      ok = await write(() => sb.from("staalronde_punten").insert(ps.map((p, i) => ({ id: crypto.randomUUID(), ronde_id: id, punt_id: p.id, volgorde: i,
-        afdeling: p.afdeling, verdiep: p.verdiep, tappunt: p.tappunt, analyses: p.analyses }))), "Ronde aangemaakt");
-      if (!ok) await sb.from("staalrondes").delete().eq("id", id);
-    }
-    knop.disabled = false;
-    if (ok) { await laadAlles(); go("ronde", { ronde: id, filter: "alle" }); }
+    await wacht([
+      { actie: "upsert", tabel: "staalrondes", rijen: [{ id, site: state.site, type: state.type, datum }] },
+      { actie: "upsert", tabel: "staalronde_punten", rijen: ps.map((p, i) => ({ id: crypto.randomUUID(), ronde_id: id, punt_id: p.id, volgorde: i,
+        afdeling: p.afdeling, verdiep: p.verdiep, tappunt: p.tappunt, analyses: p.analyses })) },
+    ], "Ronde aangemaakt");
+    go("ronde", { ronde: id, filter: "alle" });
   } else if (f.dataset.editForm) {
     const id = f.dataset.editForm, oud = punten.find(p => p.id === id); if (!oud) return;
     const r = rondes.find(x => x.id === oud.rondeId) || {};
@@ -723,29 +839,23 @@ document.addEventListener("submit", async e => {
       genomen_analyses: oud.analyses.filter(a => $(`#e-g-${CSS.escape(a)}`) && $(`#e-g-${CSS.escape(a)}`).checked),
       opmerkingen: $("#e-opmerkingen").value.trim(),
     };
-    knop.disabled = true;
-    const nieuw = await uploadNieuw("e", `${r.site}/${r.id}`, id);
-    if (!nieuw) { knop.disabled = false; toast("Een foto kon niet opgeslagen worden. Probeer opnieuw."); return; }
+    const nieuw = fotoNieuw.e.map((f, i) => ({ actie: "foto", pad: `${r.site}/${r.id}/${id}-${Date.now()}-${i}.jpg`, blob: f.blob }));
     const weg = oud.fotos.filter(p => fotoWeg.e.has(p));
-    d.fotos = oud.fotos.filter(p => !fotoWeg.e.has(p)).concat(nieuw);
-    const ok = await write(() => sb.from("staalronde_punten").update(d).eq("id", id), "Opgeslagen");
-    knop.disabled = false;
-    if (!ok) { wisFotos(nieuw); return; }
-    wisFotos(weg); wisKeuze("e"); state.edit = null; render();
+    d.fotos = oud.fotos.filter(p => !fotoWeg.e.has(p)).concat(nieuw.map(f => f.pad));
+    wisKeuze("e"); state.edit = null;
+    await wacht([...nieuw, { actie: "update", tabel: "staalronde_punten", id, data: d }, ...(weg.length ? [{ actie: "wis", paden: weg }] : [])], "Opgeslagen");
   } else if (f.id === "form-extra") {
     const r = rondes.find(x => x.id === state.ronde), rt = typeVan(r.type);
     const d = leesVastForm("x", rt);
     if (!d.tappunt) { $("#x-tappunt").focus(); return; }
     if (!d.analyses.length) { toast("Kies minstens één staal"); return; }
     const volgorde = Math.max(-1, ...puntenVan(r.id).map(p => p.volgorde)) + 1;
-    knop.disabled = true;
-    const ok = await write(() => sb.from("staalronde_punten").insert({ id: crypto.randomUUID(), ronde_id: r.id, volgorde, ...d }), "Punt toegevoegd");
-    knop.disabled = false;
-    if (ok) { f.reset(); }
+    f.reset();
+    await wacht([{ actie: "upsert", tabel: "staalronde_punten", rijen: [{ id: crypto.randomUUID(), ronde_id: r.id, volgorde, ...d }] }], "Punt toegevoegd");
   } else if (f.id === "form-ronde-edit") {
     const datum = $("#re-datum").value;
-    const ok = await write(() => sb.from("staalrondes").update({ datum }).eq("id", state.ronde), "Opgeslagen");
-    if (ok) { state.editRonde = false; render(); }
+    state.editRonde = false;
+    await wacht([{ actie: "update", tabel: "staalrondes", id: state.ronde, data: { datum } }], "Opgeslagen");
   }
 });
 
@@ -792,8 +902,7 @@ document.addEventListener("change", async e => {
   if (t.dataset.genomen) {
     const p = punten.find(x => x.id === t.dataset.genomen); if (!p) return;
     const genomen = t.checked ? [...new Set([...p.genomen, t.dataset.analyse])] : p.genomen.filter(a => a !== t.dataset.analyse);
-    const ok = await write(() => sb.from("staalronde_punten").update({ genomen_analyses: genomen }).eq("id", p.id));
-    if (!ok) t.checked = !t.checked;
+    await wacht([{ actie: "update", tabel: "staalronde_punten", id: p.id, data: { genomen_analyses: genomen } }]);
     return;
   }
   if (!t.dataset.fotoInput) return;
@@ -814,7 +923,11 @@ document.addEventListener("click", async e => {
   const b = e.target.closest("button");
   if (!b) return;
   const d = b.dataset;
-  if (b.id === "logout") { await sb.auth.signOut(); return; }
+  if (b.id === "logout") {
+    if (wachtrij.length) { toast("Er wachten nog wijzigingen. Meld je pas af als alles verstuurd is."); return; }
+    try { localStorage.removeItem(CACHE_SLEUTEL); } catch {}
+    await sb.auth.signOut(); return;
+  }
   if (d.lijst) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerLijst(state.site, d.lijst); } finally { b.disabled = false; b.textContent = t; } return; }
   if ("export" in d) { b.disabled = true; const t = b.textContent; b.textContent = "Bezig…"; try { await exporteerRonde(state.ronde); } finally { b.disabled = false; b.textContent = t; } return; }
   if (d.fotoWeg) {
@@ -859,14 +972,15 @@ document.addEventListener("click", async e => {
   }
   else if (d.delPunt) {
     const fotos = (punten.find(p => p.id === d.delPunt) || {}).fotos;
-    if (await write(() => sb.from("staalronde_punten").delete().eq("id", d.delPunt), "Punt verwijderd")) { wisFotos(fotos); state.confirm = null; render(); }
+    state.confirm = null;
+    await wacht([{ actie: "delete", tabel: "staalronde_punten", id: d.delPunt }, ...(fotos && fotos.length ? [{ actie: "wis", paden: fotos }] : [])], "Punt verwijderd");
   }
   else if ("delRonde" in d) {
     const r = rondes.find(x => x.id === state.ronde);
     // punten verdwijnen mee (on delete cascade)
     const fotos = puntenVan(r.id).flatMap(p => p.fotos);
-    const ok = await write(() => sb.from("staalrondes").delete().eq("id", r.id), "Ronde verwijderd");
-    if (ok) { wisFotos(fotos); go("type", { site: r.site, type: r.type }); }
+    go("type", { site: r.site, type: r.type });
+    await wacht([{ actie: "delete", tabel: "staalrondes", id: r.id }, ...(fotos.length ? [{ actie: "wis", paden: fotos }] : [])], "Ronde verwijderd");
   }
 });
 
@@ -878,26 +992,42 @@ function zetSessie(s) {
   $("#who").hidden = !s;
   $("#who-mail").textContent = s ? s.user.email : "";
   if (s && !was) {
-    laadAlles();
+    laadBewaard(s).then(() => { laadAlles(); verstuur(); });
     kanaal = sb.channel("staalnamen-wijzigingen");
     ["staalpunten", "staalrondes", "staalronde_punten"].forEach(table =>
       kanaal.on("postgres_changes", { event: "*", schema: "public", table }, () => laadAlles()));
     kanaal.subscribe();
   }
-  if (!s) { vast = []; rondes = []; punten = []; ready = false; if (kanaal) { sb.removeChannel(kanaal); kanaal = null; } }
+  if (!s) { vast = []; rondes = []; punten = []; ready = false; raw.staalpunten = []; raw.staalrondes = []; raw.staalronde_punten = []; if (kanaal) { sb.removeChannel(kanaal); kanaal = null; } }
   render();
 }
 
+function bewaardeSessie() {
+  try {
+    const ref = new URL(window.STAALNAMEN_CONFIG.supabaseUrl).hostname.split(".")[0];
+    const s = JSON.parse(localStorage.getItem(`sb-${ref}-auth-token`) || "null");
+    return s && s.user ? s : null;
+  } catch { return null; }
+}
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(e => console.error(e));
 render();
 (async () => {
   const cfg = window.STAALNAMEN_CONFIG || {};
   if (!window.supabase || !cfg.supabaseUrl || !cfg.supabaseAnonKey) { banner("De app kon niet starten: de koppeling met de database ontbreekt (config.js)."); return; }
   sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
-  const { data } = await sb.auth.getSession();
-  zetSessie(data.session);
-  sb.auth.onAuthStateChange((_ev, s) => { if (!!s !== !!sessie) zetSessie(s); else sessie = s; });
-  // Bij terugkeer naar de app (gsm) gegevens verversen.
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && sessie) laadAlles(); });
+  const { data, error } = await sb.auth.getSession().catch(e => ({ data: {}, error: e }));
+  // Zonder verbinding kan de aanmelding niet vernieuwd worden; werk dan verder met de bewaarde aanmelding.
+  zetSessie(data.session || (netwerkFout(error) ? bewaardeSessie() : null));
+  sb.auth.onAuthStateChange((ev, s) => {
+    if (!s && ev !== "SIGNED_OUT") return;
+    if (!!s !== !!sessie) zetSessie(s); else sessie = s;
+  });
+  // Bij terugkeer naar de app (gsm) of als de verbinding terug is: gegevens verversen en de wachtrij versturen.
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && sessie) { laadAlles(); verstuur(); } });
+  addEventListener("online", () => { if (sessie) { laadAlles(); verstuur(); } });
+  addEventListener("offline", zetSync);
+  setInterval(() => { if (sessie && wachtrij.length) verstuur(); }, 30000);
 })();
 
 // Niet opnieuw tekenen terwijl iemand een formulier invult; dat zou getypte tekst wissen.
