@@ -16,6 +16,12 @@ van de looproute pas je aan met de pijltjes; per punt kan je tot 2 foto's van he
 aan de looproute veranderen bestaande rondes niet. Met *Excel-lijst* op de pagina van de site download je een korte lijst
 van de vaste punten (welke stalen, afdeling en tappunt) om door te sturen naar wie de staalnames inplant.
 
+**Zonder verbinding** (bv. in een kelder): een ronde kan offline verder. Aanvinken, invullen, foto's, extra punten en
+zelfs een nieuwe ronde starten worden op het toestel bewaard (IndexedDB) en vanzelf verstuurd zodra er weer verbinding
+is; bovenaan staat dan hoeveel wijzigingen nog wachten. De app zelf en de foto's van de tappunten die al eens getoond
+werden, blijven bewaard via een service worker ([`sw.js`](sw.js)). Open de ronde dus één keer met verbinding.
+Het beheer van de vaste punten en de Excel-export vragen wel verbinding.
+
 De app is een statische pagina (GitHub Pages), gebouwd op dezelfde basis als
 [veiligheidsrondes](https://github.com/Obscuritatis/veiligheidsrondes). Ze gebruikt hetzelfde Supabase-project
 en dezelfde aanmelding met een link per e-mail, maar eigen tabellen (`staalpunten`, `staalrondes`,
